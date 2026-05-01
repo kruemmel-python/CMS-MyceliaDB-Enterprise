@@ -338,7 +338,7 @@ Neu:
 
 ---
 
-## v1.21.21 Media-Attractor-System für Forum, Blog und Blog-Erstellung
+## v1.21.25 Media-Attractor-System für Forum, Blog und Blog-Erstellung
 
 Diese Version ergänzt die Weboberfläche um einen durchgängigen Media-Pfad. Bilder und sichere Medienlinks sind nicht mehr nur an Forum-Threads oder Blogposts möglich, sondern auch direkt an Blogs.
 
@@ -437,7 +437,7 @@ OK
 ```
 
 
-## v1.21.21 Sicherheitskorrektur: PHP bleibt blind
+## v1.21.25 Sicherheitskorrektur: PHP bleibt blind
 
 Die README präzisiert das Sicherheitsmodell:
 
@@ -451,7 +451,7 @@ Die README präzisiert das Sicherheitsmodell:
 Die verbleibenden Prüfbereiche sind daher nicht „PHP liest Klartext“, sondern Gateway-Allowlists, Tokenrotation, Session-Fixation, Localhost-API-Isolation, Upload-/MIME-Grenzen, Log-Redaction, Dateirechte, Native-DLL-Authentizität und Supply-Chain-Kontrolle.
 
 
-## v1.21.21 Präzisierung des Sicherheitsmodells
+## v1.21.25 Präzisierung des Sicherheitsmodells
 
 Die Dokumentation beschreibt PHP, lokale API, Sessionbindung, Logs, Dateirechte, Native-DLLs, Memory-Probes und Supply Chain nicht mehr als pauschal offene Angriffsflächen. Diese Bereiche sind im Code als abgesicherte Prüfzonen zu verstehen:
 
@@ -467,9 +467,9 @@ Die bewusste Klartext-Ausnahme bleibt der DSGVO-Pfad **Eigene Daten herunterlade
 
 ---
 
-## v1.21.7 bis v1.21.21 Enterprise Evolution und Nachrichten
+## v1.21.25 bis v1.21.25 Enterprise Evolution und Nachrichten
 
-### v1.21.7 Enterprise Evolution Pack
+### v1.21.25 Enterprise Evolution Pack
 
 Umgesetzt wurden acht Weiterentwicklungen:
 
@@ -482,7 +482,7 @@ Umgesetzt wurden acht Weiterentwicklungen:
 - Memory-Probe-Härtung mit Canaries
 - VRAM-Zeroing-/Constant-Time-Contract
 
-### v1.21.9 E2EE/Gateway Hotfix
+### v1.21.25 E2EE/Gateway Hotfix
 
 Korrigiert wurden:
 
@@ -491,11 +491,11 @@ Korrigiert wurden:
 - Script-Reihenfolge: E2EE-Verschlüsselung vor Direct-Ingest-Versiegelung
 - robustere Verarbeitung von Public-Key-JWKs
 
-### v1.21.10 E2EE Recipient Directory
+### v1.21.25 E2EE Recipient Directory
 
 Nutzer müssen keine Empfänger-Signaturen mehr kopieren. Die Engine liefert ein Empfänger-Verzeichnis mit E2EE-fähigen Nutzern und aktuellem Public Key. Alte Key-Signatur-Formulare bleiben kompatibel.
 
-### v1.21.11 Profil-Mailbox
+### v1.21.25 Profil-Mailbox
 
 Neue Funktionen:
 
@@ -508,11 +508,11 @@ Neue Funktionen:
 
 Die Engine speichert weiterhin nur Ciphertexts. Der Klartext entsteht im Browser.
 
-### v1.21.12 Snapshot Restore Fallback Hotfix
+### v1.21.25 Snapshot Restore Fallback Hotfix
 
 Leere Restore-Aufrufe liefern bei fehlender konfigurierter Snapshot-Datei einen Fehler. Legacy-Fallbacks bleiben für alte Snapshot-Pfade erhalten.
 
-### v1.21.21 Profil-Nachrichtenmenü
+### v1.21.25 Profil-Nachrichtenmenü
 
 Das Profil enthält ein sichtbares Nachrichtenmenü:
 
@@ -559,97 +559,158 @@ cd C:\web_sicherheit\html; python mycelia_platform.py
 cd C:\web_sicherheit\www; php -S 127.0.0.1:8090
 ```
 
-
 ---
 
-## Aktualisierung v1.21.14 bis v1.21.21
+## Aktualisierung v1.21.14 bis v1.21.25
 
-Diese Fassung dokumentiert die Entwicklungsschritte nach v1.21.13 bis zum aktuellen Stand **v1.21.21 Plugin Activation Hotfix**.
+Diese Fassung dokumentiert den aktuellen Stand bis **v1.21.25 Client Markdown Vault**. Die Dokumentation beschreibt keine prozentuale Sicherheitsfestlegung. Bewertet werden ausschließlich die implementierten Schutzmechanismen, die nachvollziehbaren Grenzen und die prüfbaren Evidenzpfade.
 
-### v1.21.14 — Öffentlicher Blog-Katalog
+### v1.21.14 — Öffentlicher Blog-Katalog mit getrennter Owner-Ansicht
 
-Der Menüpunkt **Blogs** ist wieder ein öffentlicher Katalog. Session-gebundene Lesezugriffe setzen bei `list_blogs` keinen unbeabsichtigten `owner_signature`-Filter mehr. Dadurch sehen eingeloggte Nutzer auch Blogs anderer Nutzer. **Mein Blog** bleibt davon getrennt und zeigt weiterhin nur eigene Blogs.
+Der Menüpunkt **Blogs** ist ein öffentlicher, aber weiterhin sessiongeschützter Katalog. Eingeloggte Nutzer sehen dort auch Blogs anderer Nutzer. Die Ansicht **Mein Blog** bleibt davon getrennt und filtert explizit nach dem Besitzer.
 
 ### v1.21.15 — Blog-Kommentare und Blog-Reaktionen
 
-Öffentliche Blogs können wieder kommentiert und mit Reaktionen versehen werden. Blog-Detailseiten zeigen Likes, Dislikes, Kommentare, Kommentarformulare sowie Kommentaraktionen. Die Engine behandelt `target_type = blog` korrekt als Blog-Kommentar-/Blog-Reaktionsziel.
+Öffentliche Blog-Detailseiten unterstützen Kommentare und Reaktionen. Blog-, Blogpost- und Kommentarziele werden sauber über `target_type` und Signaturen getrennt.
 
-### v1.21.16 — Trennung von öffentlicher Blog-Ansicht und Owner-Ansicht
+### v1.21.16 — Regression gegen versehentliche Blog-Privatisierung
 
-Die öffentliche `Blogs`-Ansicht und die persönliche `Mein Blog`-Ansicht sind nun klar getrennt. `Blogs` bleibt öffentlich sichtbar, während `Mein Blog` explizit nach dem Besitzer filtert. Regressionstests prüfen, dass User B den Blog von User A im öffentlichen Katalog sieht.
+Die öffentliche Blog-Ansicht und die private Owner-Verwaltung wurden testseitig abgesichert, damit Blogs anderer Nutzer in `Blogs` sichtbar bleiben, aber `Mein Blog` nur eigene Blogs verwaltet.
 
 ### v1.21.17 — Enterprise User Plugins
 
-Drei Enterprise-Plugins wurden ergänzt:
+Ergänzt wurden Enterprise-Plugins wie **Mycelia Digest**, **Privacy Guardian** und **Content Trust & Safety Lens**. Diese Plugins arbeiten mit erlaubten Capabilities und Aggregaten. Sie liefern keine privaten E2EE-Klartexte.
 
-- **Mycelia Digest**: persönliche Aktivitätsübersicht mit E2EE-Zählern, neuen Kommentaren, Reaktionen und neuen öffentlichen Inhalten.
-- **Privacy Guardian**: Dateninventur für eigene Inhalte, Medien, E2EE-Key-Status, Export-/Löschhinweise und Datenschutzstatus.
-- **Content Trust & Safety Lens**: Trust-/Safety-Signale für öffentliche Inhalte auf Basis erlaubter Aggregate, ohne E2EE-Klartexte oder private Rohdaten.
+### v1.21.18 — Community-/Fun-Plugins
 
-Die Plugins laufen über ein kontrolliertes Plugin-Dashboard und erlaubte Capabilities. Sie lesen keine privaten E2EE-Nachrichten.
+Ergänzt wurden zehn Community-Plugins:
 
-### v1.21.18 — Fun Plugins
-
-Zehn Community-/Spaß-Plugins wurden ergänzt:
-
-1. **Mycelia Achievements**
-2. **Daily Pulse**
-3. **Mycelia Quests**
-4. **Reaction Stickers**
-5. **Blog Mood Themes**
-6. **Community Constellation**
-7. **Sporenflug Random Discovery**
-8. **Creator Cards**
-9. **Polls / Abstimmungen**
-10. **Time Capsules**
-
-Dazu kamen neue Engine-Kommandos wie `fun_plugin_dashboard`, `create_poll`, `list_polls`, `vote_poll`, `create_time_capsule` und `list_time_capsules`.
+1. Mycelia Achievements
+2. Daily Pulse
+3. Mycelia Quests
+4. Reaction Stickers
+5. Blog Mood Themes
+6. Community Constellation
+7. Sporenflug Random Discovery
+8. Creator Cards
+9. Polls / Abstimmungen
+10. Time Capsules
 
 ### v1.21.19 — Plugin-Capabilities-Hotfix
 
-Die Plugin-Capability-Allowlist wurde erweitert, damit die neuen Plugin-Templates installierbar sind. Ergänzt wurden sichere Capabilities wie `stats.own.content`, `stats.own.media`, `stats.own.e2ee_keys`, `stats.public.reactions` und `stats.public.blog.count`.
+Die Capability-Allowlist wurde erweitert, damit die neuen Plugin-Templates installierbar sind. Ergänzt wurden unter anderem sichere Capabilities für eigene Inhaltsaggregate, Medienaggregate, E2EE-Key-Aggregate, öffentliche Reaktionen und Blog-Zähler.
 
 ### v1.21.20 — Reaction Stickers und Blog Mood Themes im UI
 
-Reaction Stickers wurden in Forum, Threads, Blogs, Blogposts und Kommentare integriert. Zusätzlich zu Like/Dislike können bei aktiviertem Plugin weitere Reaktionen genutzt werden:
-
-- 🔥 Stark
-- 😂 Lustig
-- 💚 Herz
-- 💡 Interessant
-- ❤️ Danke
-- 🤔 Nachdenklich
-
-Blog Mood Themes sind bei Blog-Erstellung und Blog-Bearbeitung auswählbar, sofern das Plugin aktiv ist. Erlaubte Themes sind strikt allowlisted, etwa Security, Forschung, Gaming, Natur, Kreativ und Sci-Fi.
+Reaction Stickers wurden in Forum, Threads, Blogs, Blogposts und Kommentare integriert. Neben Like/Dislike sind bei aktiviertem Plugin weitere Reaktionen möglich. Blog Mood Themes sind bei Blog-Erstellung und Blog-Bearbeitung auswählbar, sofern das Plugin aktiv ist.
 
 ### v1.21.21 — Plugin Activation Hotfix
 
-Plugin-Funktionen sind nun **inert by default**. Installierbare Plugin-Templates sind im Adminbereich sichtbar, aber ihre Funktionen werden erst freigeschaltet, wenn das jeweilige Plugin installiert und aktiviert wurde.
+Plugin-Funktionen sind **inert by default**. Ein Plugin-Template im Adminbereich ist nur eine installierbare Vorlage. Produktive Wirkung entsteht erst nach Installation und Aktivierung.
 
-Konkret gilt:
+Serverseitig wird erzwungen:
 
-- Ohne aktiviertes `reaction_stickers` bleiben nur Core-Reaktionen Like/Dislike sichtbar und serverseitig erlaubt.
-- Ohne aktiviertes `blog_mood_themes` werden Blog-Theme-Felder nicht angezeigt und serverseitig ignoriert beziehungsweise blockiert.
-- Polls und Time Capsules sind erst nach Aktivierung der jeweiligen Plugins nutzbar.
-- Plugin-Dashboards zeigen nur aktivierte Plugin-Funktionen.
-- Der Server erzwingt die Plugin-Aktivierung, die UI ist also nicht die einzige Schutzschicht.
+- Erweiterte Reaction Stickers funktionieren nur mit aktivem `reaction_stickers`.
+- Blog Mood Themes funktionieren nur mit aktivem `blog_mood_themes`.
+- Polls funktionieren nur mit aktivem `polls`.
+- Time Capsules funktionieren nur mit aktivem `time_capsules`.
+- Plugin-Dashboards zeigen nur aktivierte Plugins.
 
-Diese Änderung stellt sicher, dass Plugins dem erwarteten Enterprise-Modell folgen: **installieren, aktivieren, dann nutzen**.
+### v1.21.22 — Forum-/Blog-Dokumentstil
 
+Forum- und Blogseiten wurden optisch an einen dunklen README-/Markdown-Dokumentstil angelehnt. Ziel war eine ruhigere, lesbare Darstellung mit klaren Panels, Metadaten-Pills, Codeblock-Optik und konsistenten Card-Abständen.
 
-## v1.21.21 Plugin-Aktivierungsmodell
+### v1.21.23 — Markdown-Rendering für Forum und Blog
 
-Ab v1.21.21 gilt ein striktes Plugin-Lifecycle-Modell:
+Forum- und Blog-Inhalte erhielten Markdown-Unterstützung mit Codeblöcken, Überschriften, Listen, Blockquotes, Inline-Code und Kopierbuttons. In dieser Phase wurde serverseitiges Rendering eingeführt.
+
+### v1.21.24 — Long Markdown Content Hotfix
+
+Die alten Text- und Renderlimits für lange Inhalte wurden angehoben. Für lange Forum-/Blogtexte wurden konfigurierbare Limits eingeführt, unter anderem `MYCELIA_PUBLIC_TEXT_STORAGE_LIMIT` und `MYCELIA_PUBLIC_MARKDOWN_RENDER_LIMIT`.
+
+### v1.21.25 — Client Markdown Vault
+
+Die Markdown-Architektur wurde sicherheitlich korrigiert. Neue Forum-/Blog-Markdown-Inhalte werden als **Client Markdown Vault** behandelt:
 
 ```text
-Template sichtbar → Plugin installieren → Plugin aktivieren → Funktion erscheint im UI
+Browser erstellt Inhalt
+→ Browser kapselt Markdown vor Direct-Ingest in eine Vault-Capsule
+→ PHP erhält nur den sealed Direct-Ingest-Envelope
+→ Engine speichert die Capsule
+→ PHP rendert nur einen Platzhalter und Metadaten
+→ Browser entschlüsselt/rendert Markdown lokal
 ```
 
-Das verhindert, dass Plugin-Funktionen bereits durch bloße Code-Präsenz aktiv sind. Die Serverlogik prüft die Aktivierung zusätzlich zur UI:
+Damit werden serverseitige Anzeigewege wieder klartextarm gehalten. PHP soll bei normalen Forum-/Blog-Anzeigen keine Markdown-Klartexte, keine `body`-/`description`-Klartexte und keine serverseitig gerenderten HTML-Fragmente erhalten. Klartext entsteht bei normaler Nutzung erst im eingeloggten Browser des berechtigten Nutzers.
 
-- Erweiterte Reaction Stickers sind ohne aktives Plugin nicht erlaubt.
-- Blog Mood Themes sind ohne aktives Plugin nicht auswählbar und werden serverseitig nicht übernommen.
-- Polls und Time Capsules sind ohne Aktivierung nicht nutzbar.
-- Plugin-Dashboards zeigen nur aktivierte Funktionen.
+---
 
-Damit bleibt der Plugin-Katalog installierbar, aber der produktive Funktionsumfang ist administrativ kontrolliert.
+## Aktuelles Zugriffsschutzmodell für Forum und Blog
+
+Forum- und Blogseiten sind sessiongeschützt. Ein direkter Zugriff ohne Login auf `forum.php`, `thread.php`, `blogs.php` oder `blog.php` führt zur Start-/Login-Seite mit Hinweis, dass eine Anmeldung erforderlich ist.
+
+Das bedeutet:
+
+```text
+Nicht eingeloggt
+→ kein Forum
+→ kein Blog
+→ kein Detail-Renderpfad
+→ kein Content-Paket
+→ kein Klartext
+```
+
+Für eingeloggte Nutzer gilt:
+
+```text
+Gültige Session
+→ Seite erreichbar
+→ Metadaten und Content-Capsule werden ausgeliefert
+→ Browser entschlüsselt/rendert lokal
+→ Klartext existiert im DOM des berechtigten Clients
+```
+
+Die Entwicklerkonsole eines eingeloggten Nutzers kann Klartext im DOM zeigen, weil der Browser der berechtigte Anzeige-Endpunkt ist. Das ist kein Widerspruch zum Schutzmodell. Entscheidend ist, dass nicht eingeloggte Nutzer den Renderpfad nicht erreichen und dass PHP/Server-Anzeigewege nicht als Klartext-Sammelstelle dienen.
+
+---
+
+## Klartext- und Schutzgrenzen
+
+| Bereich | Verhalten |
+|---|---|
+| Direct-Ingest beim Absenden | PHP erhält keinen Formular-Klartext, sondern nur versiegelte Envelopes |
+| Forum-/Blog-Anzeige ohne Login | blockiert, kein Content-Paket |
+| Forum-/Blog-Anzeige mit Login | Browser rendert lokal für den berechtigten Nutzer |
+| PHP bei normalen Forum-/Blog-Anzeigen | soll nur Metadaten, Platzhalter und Vault-Capsules ausgeben |
+| Python/Engine bei normalen Anzeigen | soll keine serverseitigen Markdown-HTML-Fragmente erzeugen |
+| Browser-DOM beim eingeloggten Nutzer | Klartext ist dort erwartbar, weil der Nutzer den Inhalt lesen soll |
+| DSGVO Eigene Daten herunterladen | bewusste Klartext-Ausnahme |
+| E2EE-Nachrichten | bleiben separat; Klartext entsteht nur im berechtigten Browser |
+
+Korrekte Sicherheitsformulierung:
+
+> PHP bleibt für sensible Eingaben und private Payloads formularseitig blind. Forum- und Blog-Inhalte sind ohne gültige Session nicht abrufbar. Bei berechtigtem Zugriff werden Inhalte clientseitig dargestellt; Klartext entsteht im Browser des eingeloggten Nutzers. Bewusste serverseitige Klartext-Ausnahmen sind eng definierte Export-/Wiederherstellungspfade.
+
+
+## Enterprise-Sicherheitsnotiz v1.21.25
+
+Das Client-Markdown-Vault-Modell verhindert nicht, dass ein berechtigter Browser nach erfolgreicher Anmeldung Klartext sieht. Es verhindert, dass normale PHP- und Anzeigewege den Forum-/Blog-Klartext als Server-Render-Ausgabe materialisieren müssen.
+
+Bedrohungsgrenzen:
+
+- Ein nicht eingeloggter Angreifer erreicht den Forum-/Blog-Renderpfad nicht.
+- Ein eingeloggter berechtigter Nutzer sieht Klartext im Browser.
+- Eine bösartige Browser-Erweiterung oder ein kompromittierter Client kann den DOM des berechtigten Nutzers lesen.
+- Ein aktiv manipulierter Server kann grundsätzlich JavaScript verändern; das ist eine Grenze jeder browserseitigen Entschlüsselungsarchitektur.
+- E2EE-Nachrichten bleiben die Architektur für private Nutzer-zu-Nutzer-Inhalte.
+
+Prüfbare Enterprise-Kontrollen:
+
+```text
+- require_login() auf Forum-/Blog-/Detailseiten
+- kein ungeschützter Capsule-/Read-Endpunkt
+- kein Klartext in PHP-POST-Daten
+- kein Klartext in PHP-Logs
+- keine serverseitigen Markdown-HTML-Fragmente für neue Vault-Inhalte
+- DSGVO-Export als dokumentierte Ausnahme
+```
