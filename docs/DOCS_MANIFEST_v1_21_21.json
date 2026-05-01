@@ -1,0 +1,19 @@
+{
+  "version": "1.21.21",
+  "generated_for": "MyceliaDB Enterprise documentation update",
+  "files": [
+    "Dokumentation.md",
+    "Dokumentation_v1_21_21.md",
+    "ENTERPRISE_WWW_README.md",
+    "ENTERPRISE_WWW_README_v1_21_21.md",
+    "Schnellstart.md",
+    "Schnellstart_v1_21_21.md",
+    "whitepaper.md",
+    "whitepaper_v1_21_21.md"
+  ],
+  "notes": [
+    "98%-Sicherheitsfestlegungen bleiben entfernt.",
+    "Dokumentiert öffentliche Blog-Katalog-Trennung, Blog-Reaktionen, Enterprise-Plugins, Fun-Plugins und Plugin-Aktivierungsmodell.",
+    "Plugin-Funktionen sind inert by default und erst nach Installation/Aktivierung nutzbar."
+  ]
+}
