@@ -29,12 +29,12 @@ layout_header(txt('forum.title'));
                 <div class="meta">
                     <span>von <?= e($thread['author_username']) ?></span>
                     <span><?= e(fmt_time($thread['created_at'] ?? null)) ?></span>
-                    <span>👍 <?= e($thread['likes'] ?? 0) ?></span>
-                    <span>👎 <?= e($thread['dislikes'] ?? 0) ?></span>
                     <span>💬 <?= e($thread['comments'] ?? 0) ?></span><span>🖼️ <?= e($thread['media_count'] ?? 0) ?></span>
                     <span>Stabilität <?= e($thread['stability'] ?? 'n/a') ?></span>
                 </div>
+                <?php render_reaction_summary($thread); ?>
                 <?php render_media_gallery($thread['media_preview'] ?? $thread['media'] ?? []); ?>
+                <?php render_reaction_sticker_form($thread['signature'] ?? '', 'forum_thread'); ?>
                 <?= ownership_actions(mycelia_identity($thread['author_signature'] ?? ''), 'thread.php?id=' . mycelia_url_component($thread['signature'] ?? '') . '&edit=1', 'delete_thread', $thread['signature']) ?>
             </article>
         <?php endforeach; ?>

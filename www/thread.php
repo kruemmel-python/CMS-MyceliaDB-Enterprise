@@ -80,14 +80,11 @@ layout_header($thread['title'] ?? 'Thread');
             </form>
         <?php else: ?>
             <h1><?= e($thread['title']) ?></h1>
-            <div class="meta"><span>von <?= e($thread['author_username']) ?></span><span><?= e(fmt_time($thread['created_at'])) ?></span><span>👍 <?= e($thread['likes']) ?></span><span>👎 <?= e($thread['dislikes']) ?></span></div>
+            <div class="meta"><span>von <?= e($thread['author_username']) ?></span><span><?= e(fmt_time($thread['created_at'])) ?></span></div>
+            <?php render_reaction_summary($thread); ?>
             <div class="content"><?= e($thread['body']) ?></div>
             <?php render_media_gallery($thread['media'] ?? []); ?>
-            <form method="post" class="actions" data-direct-op="react_content">
-                <input type="hidden" name="target_signature" value="<?= e($thread['signature']) ?>">
-                <button name="react" value="like" class="secondary">👍 Like</button>
-                <button name="react" value="dislike" class="secondary">👎 Dislike</button>
-            </form>
+            <?php render_reaction_sticker_form($thread['signature'] ?? '', 'forum_thread'); ?>
             <?= ownership_actions(mycelia_identity($thread['author_signature'] ?? ''), 'thread.php?id=' . mycelia_url_component($thread['signature'] ?? '') . '&edit=1', 'delete_thread', $thread['signature']) ?>
         <?php endif; ?>
     </article>
@@ -112,12 +109,8 @@ layout_header($thread['title'] ?? 'Thread');
         <article class="card">
             <div class="meta"><span><?= e($comment['author_username']) ?></span><span><?= e(fmt_time($comment['created_at'])) ?></span></div>
             <div class="content"><?= e($comment['body']) ?></div>
-            <div class="meta"><span>👍 <?= e($comment['likes'] ?? 0) ?></span><span>👎 <?= e($comment['dislikes'] ?? 0) ?></span></div>
-            <form method="post" class="actions" data-direct-op="react_content">
-                <input type="hidden" name="comment_signature" value="<?= e($comment['signature']) ?>">
-                <button name="react_comment" value="like" class="secondary">👍 Kommentar liken</button>
-                <button name="react_comment" value="dislike" class="secondary">👎 Kommentar disliken</button>
-            </form>
+            <?php render_reaction_summary($comment); ?>
+            <?php render_reaction_sticker_form($comment['signature'] ?? '', 'comment', ['comment_signature' => $comment['signature'] ?? '']); ?>
             <?php if (($comment['author_signature'] ?? '') === current_signature() || is_admin()): ?>
             <form method="post" class="actions" data-direct-op="delete_comment" onsubmit="return confirm('Kommentar löschen?')">
                 <input type="hidden" name="comment_signature" value="<?= e($comment['signature']) ?>">

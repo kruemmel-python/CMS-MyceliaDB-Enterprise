@@ -54,15 +54,11 @@ if ($postId) {
 <section class="panel">
     <p><a href="blog.php?id=<?= e($blogId) ?>">← Zurück zum Blog</a></p>
     <h1><?= e($post['title']) ?></h1>
-    <div class="meta"><span>von <?= e($post['author_username']) ?></span><span><?= e(fmt_time($post['created_at'])) ?></span><span>👍 <?= e($post['likes']) ?></span><span>👎 <?= e($post['dislikes']) ?></span></div>
+    <div class="meta"><span>von <?= e($post['author_username']) ?></span><span><?= e(fmt_time($post['created_at'])) ?></span></div>
+    <?php render_reaction_summary($post); ?>
     <div class="content"><?= e($post['body']) ?></div>
     <?php render_media_gallery($post['media'] ?? []); ?>
-    <form method="post" class="actions" data-direct-op="react_content">
-        <input type="hidden" name="blog_signature" value="<?= e($blogId) ?>">
-        <input type="hidden" name="post_signature" value="<?= e($postId) ?>">
-        <button name="react_post" value="like" class="secondary">👍 Like</button>
-        <button name="react_post" value="dislike" class="secondary">👎 Dislike</button>
-    </form>
+    <?php render_reaction_sticker_form($postId, 'blog_post', ['blog_signature' => $blogId, 'post_signature' => $postId]); ?>
 </section>
 <section class="split" style="margin-top:22px">
     <div class="panel">
@@ -71,14 +67,8 @@ if ($postId) {
             <article class="card">
                 <div class="meta"><span><?= e($comment['author_username']) ?></span><span><?= e(fmt_time($comment['created_at'])) ?></span></div>
                 <div class="content"><?= e($comment['body']) ?></div>
-                <div class="meta"><span>👍 <?= e($comment['likes'] ?? 0) ?></span><span>👎 <?= e($comment['dislikes'] ?? 0) ?></span></div>
-                <form method="post" class="actions" data-direct-op="react_content">
-                    <input type="hidden" name="blog_signature" value="<?= e($blogId) ?>">
-                    <input type="hidden" name="post_signature" value="<?= e($postId) ?>">
-                    <input type="hidden" name="comment_signature" value="<?= e($comment['signature']) ?>">
-                    <button name="react_comment" value="like" class="secondary">👍 Kommentar liken</button>
-                    <button name="react_comment" value="dislike" class="secondary">👎 Kommentar disliken</button>
-                </form>
+                <?php render_reaction_summary($comment); ?>
+                <?php render_reaction_sticker_form($comment['signature'] ?? '', 'comment', ['blog_signature' => $blogId, 'post_signature' => $postId, 'comment_signature' => $comment['signature'] ?? '']); ?>
                 <?php if (($comment['author_signature'] ?? '') === current_signature() || is_admin()): ?>
                 <form method="post" data-direct-op="delete_comment"><input type="hidden" name="blog_signature" value="<?= e($blogId) ?>"><input type="hidden" name="post_signature" value="<?= e($postId) ?>"><input type="hidden" name="comment_signature" value="<?= e($comment['signature']) ?>"><button name="delete_comment" class="danger">Löschen</button></form>
                 <?php endif; ?>
@@ -111,17 +101,12 @@ if ($postId) {
     $blogComments = require_mycelia_ok(call_mycelia('list_comments', ['target_signature' => $blogId]))['comments'] ?? [];
 ?>
 <section class="panel">
-    <h1><?= e($blog['title']) ?></h1>
+    <h1><?= e($blog['title']) ?> <?php render_blog_theme_badge($blog); ?></h1>
     <p><?= e($blog['description']) ?></p>
-    <div class="meta"><span>von <?= e($blog['owner_username']) ?></span><span>💬 <?= e($blog['comments'] ?? count($blogComments)) ?></span><span>👍 <?= e($blog['likes'] ?? 0) ?></span><span>👎 <?= e($blog['dislikes'] ?? 0) ?></span><span>🖼️ <?= e($blog['media_count'] ?? 0) ?></span><span>Stabilität <?= e($blog['stability']) ?></span></div>
+    <div class="meta"><span>von <?= e($blog['owner_username']) ?></span><span>💬 <?= e($blog['comments'] ?? count($blogComments)) ?></span><span>🖼️ <?= e($blog['media_count'] ?? 0) ?></span><span>Stabilität <?= e($blog['stability']) ?></span></div>
+    <?php render_reaction_summary($blog); ?>
     <?php render_media_gallery($blog['media'] ?? []); ?>
-    <form method="post" class="actions" data-direct-op="react_content">
-        <input type="hidden" name="blog_signature" value="<?= e($blogId) ?>">
-        <input type="hidden" name="target_signature" value="<?= e($blogId) ?>">
-        <input type="hidden" name="target_type" value="blog">
-        <button name="reaction" value="like" class="secondary">👍 Blog liken</button>
-        <button name="reaction" value="dislike" class="secondary">👎 Dislike</button>
-    </form>
+    <?php render_reaction_sticker_form($blogId, 'blog', ['blog_signature' => $blogId]); ?>
 </section>
 <section class="split" style="margin-top:22px">
     <div class="panel">
@@ -130,14 +115,8 @@ if ($postId) {
             <article class="card">
                 <div class="meta"><span><?= e($comment['author_username']) ?></span><span><?= e(fmt_time($comment['created_at'])) ?></span></div>
                 <div class="content"><?= e($comment['body']) ?></div>
-                <div class="meta"><span>👍 <?= e($comment['likes'] ?? 0) ?></span><span>👎 <?= e($comment['dislikes'] ?? 0) ?></span></div>
-                <form method="post" class="actions" data-direct-op="react_content">
-                    <input type="hidden" name="blog_signature" value="<?= e($blogId) ?>">
-                    <input type="hidden" name="comment_signature" value="<?= e($comment['signature']) ?>">
-                    <input type="hidden" name="target_type" value="comment">
-                    <button name="reaction" value="like" class="secondary">👍 Kommentar liken</button>
-                    <button name="reaction" value="dislike" class="secondary">👎 Kommentar disliken</button>
-                </form>
+                <?php render_reaction_summary($comment); ?>
+                <?php render_reaction_sticker_form($comment['signature'] ?? '', 'comment', ['blog_signature' => $blogId, 'comment_signature' => $comment['signature'] ?? '']); ?>
                 <?php if (($comment['author_signature'] ?? '') === current_signature() || is_admin()): ?>
                 <form method="post" data-direct-op="delete_comment">
                     <input type="hidden" name="blog_signature" value="<?= e($blogId) ?>">

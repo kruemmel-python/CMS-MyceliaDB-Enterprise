@@ -415,10 +415,125 @@ function media_upload_fields(string $targetSignature = '', string $targetType = 
     echo "<input name='media_title' maxlength='240' placeholder='Optionale Bild-/Video-Beschreibung'>";
 }
 
+
+function fun_plugin_enabled(string $pluginId): bool {
+    static $enabledMap = null;
+    if ($enabledMap === null) {
+        $enabledMap = [];
+        if (is_logged_in()) {
+            $dashboard = call_mycelia('fun_plugin_dashboard', engine_session_context());
+            $ids = is_array($dashboard['enabled_plugin_ids'] ?? null) ? $dashboard['enabled_plugin_ids'] : [];
+            foreach ($ids as $id) {
+                $enabledMap[(string)$id] = true;
+            }
+        }
+    }
+    return isset($enabledMap[$pluginId]);
+}
+
+function reaction_sticker_catalog(): array {
+    return [
+        'like' => ['emoji' => '👍', 'label' => 'Like'],
+        'dislike' => ['emoji' => '👎', 'label' => 'Dislike'],
+        'fire' => ['emoji' => '🔥', 'label' => 'Stark'],
+        'funny' => ['emoji' => '😂', 'label' => 'Lustig'],
+        'heart' => ['emoji' => '💚', 'label' => 'Herz'],
+        'insightful' => ['emoji' => '💡', 'label' => 'Interessant'],
+        'thanks' => ['emoji' => '❤️', 'label' => 'Danke'],
+        'thinking' => ['emoji' => '🤔', 'label' => 'Nachdenklich'],
+    ];
+}
+
+function reaction_breakdown(mixed $content): array {
+    if (is_array($content) && isset($content['reaction_breakdown']) && is_array($content['reaction_breakdown'])) {
+        return $content['reaction_breakdown'];
+    }
+    return [];
+}
+
+function active_reaction_catalog(): array {
+    $catalog = reaction_sticker_catalog();
+    if (fun_plugin_enabled('reaction_stickers')) {
+        return $catalog;
+    }
+    return array_intersect_key($catalog, array_flip(['like', 'dislike']));
+}
+
+function render_reaction_summary(mixed $content): void {
+    $breakdown = reaction_breakdown($content);
+    echo "<div class='meta reaction-summary'>";
+    foreach (active_reaction_catalog() as $id => $meta) {
+        $count = intval($breakdown[$id] ?? (($id === 'like') ? ($content['likes'] ?? 0) : (($id === 'dislike') ? ($content['dislikes'] ?? 0) : 0)));
+        echo "<span>" . e($meta['emoji'] . ' ' . $meta['label'] . ' ' . $count) . "</span>";
+    }
+    echo "</div>";
+}
+
+function render_reaction_sticker_form(string $targetSignature, string $targetType, array $hidden = []): void {
+    if ($targetSignature === '') {
+        return;
+    }
+    echo "<form method='post' class='actions reaction-stickers' data-direct-op='react_content'>";
+    foreach ($hidden as $name => $value) {
+        echo "<input type='hidden' name='" . e($name) . "' value='" . e(strval($value)) . "'>";
+    }
+    echo "<input type='hidden' name='target_signature' value='" . e($targetSignature) . "'>";
+    echo "<input type='hidden' name='target_type' value='" . e($targetType) . "'>";
+    foreach (active_reaction_catalog() as $id => $meta) {
+        echo "<button name='reaction' value='" . e($id) . "' class='secondary' title='" . e($meta['label']) . "'>" . e($meta['emoji'] . ' ' . $meta['label']) . "</button>";
+    }
+    echo "</form>";
+}
+
+function blog_mood_theme_catalog(): array {
+    return [
+        'security' => ['emoji' => '🛡️', 'label' => 'Security'],
+        'research' => ['emoji' => '🧪', 'label' => 'Forschung'],
+        'gaming' => ['emoji' => '🎮', 'label' => 'Gaming'],
+        'nature' => ['emoji' => '🌿', 'label' => 'Natur'],
+        'creative' => ['emoji' => '🎨', 'label' => 'Kreativ'],
+        'scifi' => ['emoji' => '🌌', 'label' => 'Sci-Fi'],
+    ];
+}
+
+function render_blog_theme_select(string $selected = ''): void {
+    if (!fun_plugin_enabled('blog_mood_themes')) {
+        return;
+    }
+    echo "<label>Blog Mood Theme</label>";
+    echo "<select name='blog_theme'>";
+    echo "<option value=''>Kein Theme</option>";
+    foreach (blog_mood_theme_catalog() as $id => $meta) {
+        $sel = ($selected === $id) ? " selected" : "";
+        echo "<option value='" . e($id) . "'" . $sel . ">" . e($meta['emoji'] . ' ' . $meta['label']) . "</option>";
+    }
+    echo "</select>";
+}
+
+function render_blog_theme_badge(mixed $blog): void {
+    if (!fun_plugin_enabled('blog_mood_themes')) {
+        return;
+    }
+    if (!is_array($blog)) {
+        return;
+    }
+    $theme = mycelia_scalar_text($blog['blog_theme'] ?? '');
+    if ($theme === '') {
+        return;
+    }
+    $catalog = blog_mood_theme_catalog();
+    $meta = $catalog[$theme] ?? null;
+    if (!$meta) {
+        return;
+    }
+    echo "<span class='badge blog-theme'>" . e($meta['emoji'] . ' ' . $meta['label']) . "</span>";
+}
+
+
 function layout_header(mixed $title): void {
     $flash = flash();
     $navAuth = is_logged_in()
-        ? '<a href="profile.php">' . e(txt('nav.profile')) . '</a><a href="profile.php#messages">Nachrichten</a><a href="dashboard.php">Live-Dashboard</a><a href="e2ee.php">E2EE</a><a href="webauthn.php">WebAuthn</a><a href="forum.php">' . e(txt('nav.forum')) . '</a><a href="blogs.php">' . e(txt('nav.blogs')) . '</a><a href="my_blog.php">' . e(txt('nav.my_blog')) . '</a><a href="privacy.php">' . e(txt('nav.privacy')) . '</a>' . (is_admin() ? '<a href="plugins.php">' . e(txt('nav.plugins')) . '</a><a href="admin.php">' . e(txt('nav.admin')) . '</a>' : '') . '<a href="logout.php">' . e(txt('nav.logout')) . '</a>'
+        ? '<a href="profile.php">' . e(txt('nav.profile')) . '</a><a href="profile.php#messages">Nachrichten</a><a href="fun.php">Spaß-Plugins</a><a href="dashboard.php">Live-Dashboard</a><a href="e2ee.php">E2EE</a><a href="webauthn.php">WebAuthn</a><a href="forum.php">' . e(txt('nav.forum')) . '</a><a href="blogs.php">' . e(txt('nav.blogs')) . '</a><a href="my_blog.php">' . e(txt('nav.my_blog')) . '</a><a href="privacy.php">' . e(txt('nav.privacy')) . '</a>' . (is_admin() ? '<a href="plugins.php">' . e(txt('nav.plugins')) . '</a><a href="admin.php">' . e(txt('nav.admin')) . '</a>' : '') . '<a href="logout.php">' . e(txt('nav.logout')) . '</a>'
         : '<a href="index.php">' . e(txt('nav.login')) . '</a>';
     echo "<!doctype html><html lang='de'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>";
     echo "<title>" . e(mycelia_scalar_text($title, "MyceliaDB")) . " | MyceliaDB</title><link rel='stylesheet' href='assets/style.css'></head><body>";

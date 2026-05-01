@@ -91,6 +91,7 @@ layout_header(txt('my_blog.title'));
                 <input type="hidden" name="blog_signature" value="<?= e($selectedBlog['signature']) ?>">
                 <label>Titel</label><input name="title" value="<?= e($selectedBlog['title']) ?>" required>
                 <label>Beschreibung</label><textarea name="description"><?= e($selectedBlog['description']) ?></textarea>
+                <?php render_blog_theme_select(strval($selectedBlog['blog_theme'] ?? '')); ?>
                 <?php render_media_gallery($selectedBlog['media'] ?? []); ?>
                 <?php media_upload_fields($selectedBlog['signature'] ?? '', 'blog'); ?>
                 <div class="actions"><button name="update_blog">Blog speichern</button><button name="delete_blog" data-direct-op="delete_blog" class="danger" onclick="return confirm('Blog löschen?')">Blog löschen</button></div>
@@ -131,6 +132,7 @@ layout_header(txt('my_blog.title'));
         <form method="post" data-direct-op="create_blog">
             <label>Titel</label><input name="title" required>
             <label>Beschreibung</label><textarea name="description"></textarea>
+            <?php render_blog_theme_select(); ?>
             <?php media_upload_fields('', 'blog'); ?>
             <button name="create_blog">Blog als Attraktor speichern</button>
         </form>

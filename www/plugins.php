@@ -25,6 +25,7 @@ if (!empty($_POST['sealed_ingest']) && !empty($_POST['direct_op'])) {
 $pluginsResponse = call_mycelia('list_plugins', []);
 $plugins = ($pluginsResponse['status'] ?? '') === 'ok' ? ($pluginsResponse['plugins'] ?? []) : [];
 $catalog = ($pluginsResponse['catalog'] ?? call_mycelia('plugin_catalog', []));
+$enterprisePluginManifests = is_array($catalog['enterprise_plugins'] ?? null) ? $catalog['enterprise_plugins'] : [];
 $manifestExample = json_encode($catalog['manifest_example'] ?? [
     'plugin_id' => 'anonymous_stats',
     'name' => 'Anonyme Statistiken',
@@ -79,6 +80,25 @@ layout_header(txt('plugins.title'));
                 <li><code><?= e($hook['key'] ?? '') ?></code> — <?= e($hook['label'] ?? '') ?></li>
             <?php endforeach; ?>
         </ul>
+    </div>
+</section>
+
+<section class="panel" style="margin-top:22px">
+    <h2>Enterprise Plugin-Vorlagen</h2>
+    <p class="muted">Diese drei geprüften Manifeste sind für das Projekt vorbereitet. Installation bleibt deklarativ: kein PHP/Python-Code, keine I/O-Rechte, keine Rohdaten-Scans.</p>
+    <div class="grid three">
+        <?php foreach ($enterprisePluginManifests as $manifest): ?>
+            <?php if (!is_array($manifest)) continue; ?>
+            <div class="panel">
+                <h3><?= e($manifest['name'] ?? '') ?></h3>
+                <p class="muted"><?= e($manifest['description'] ?? '') ?></p>
+                <p class="mono"><?= e($manifest['plugin_id'] ?? '') ?> · v<?= e($manifest['version'] ?? '') ?></p>
+                <form method="post" data-direct-op="admin_install_plugin">
+                    <input type="hidden" name="manifest_json" value="<?= e(json_encode($manifest, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)) ?>">
+                    <button>Installieren / aktualisieren</button>
+                </form>
+            </div>
+        <?php endforeach; ?>
     </div>
 </section>
 
