@@ -45,6 +45,7 @@ if (isset($_POST['delete_comment'])) {
 }
 
 $blog = require_mycelia_ok(call_mycelia('get_blog', ['signature' => $blogId]))['blog'];
+$GLOBALS['MYCELIA_PAGE_CLASS'] = 'doc-readme';
 layout_header($blog['title'] ?? 'Blog');
 
 if ($postId) {
@@ -56,7 +57,7 @@ if ($postId) {
     <h1><?= e($post['title']) ?></h1>
     <div class="meta"><span>von <?= e($post['author_username']) ?></span><span><?= e(fmt_time($post['created_at'])) ?></span></div>
     <?php render_reaction_summary($post); ?>
-    <div class="content"><?= e($post['body']) ?></div>
+    <div class="content markdown-shell"><?php render_engine_markdown($post['body_vault'] ?? ($post['body_html'] ?? null), $post['body'] ?? ''); ?></div>
     <?php render_media_gallery($post['media'] ?? []); ?>
     <?php render_reaction_sticker_form($postId, 'blog_post', ['blog_signature' => $blogId, 'post_signature' => $postId]); ?>
 </section>
@@ -66,7 +67,7 @@ if ($postId) {
         <?php foreach ($comments as $comment): ?>
             <article class="card">
                 <div class="meta"><span><?= e($comment['author_username']) ?></span><span><?= e(fmt_time($comment['created_at'])) ?></span></div>
-                <div class="content"><?= e($comment['body']) ?></div>
+                <div class="content markdown-shell"><?php render_engine_markdown($comment['body_vault'] ?? ($comment['body_html'] ?? null), $comment['body'] ?? ''); ?></div>
                 <?php render_reaction_summary($comment); ?>
                 <?php render_reaction_sticker_form($comment['signature'] ?? '', 'comment', ['blog_signature' => $blogId, 'post_signature' => $postId, 'comment_signature' => $comment['signature'] ?? '']); ?>
                 <?php if (($comment['author_signature'] ?? '') === current_signature() || is_admin()): ?>
@@ -102,7 +103,7 @@ if ($postId) {
 ?>
 <section class="panel">
     <h1><?= e($blog['title']) ?> <?php render_blog_theme_badge($blog); ?></h1>
-    <p><?= e($blog['description']) ?></p>
+    <div class="content markdown-shell"><?php render_engine_markdown($blog['description_vault'] ?? ($blog['description_html'] ?? null), $blog['description'] ?? ''); ?></div>
     <div class="meta"><span>von <?= e($blog['owner_username']) ?></span><span>💬 <?= e($blog['comments'] ?? count($blogComments)) ?></span><span>🖼️ <?= e($blog['media_count'] ?? 0) ?></span><span>Stabilität <?= e($blog['stability']) ?></span></div>
     <?php render_reaction_summary($blog); ?>
     <?php render_media_gallery($blog['media'] ?? []); ?>
@@ -114,7 +115,7 @@ if ($postId) {
         <?php foreach ($blogComments as $comment): ?>
             <article class="card">
                 <div class="meta"><span><?= e($comment['author_username']) ?></span><span><?= e(fmt_time($comment['created_at'])) ?></span></div>
-                <div class="content"><?= e($comment['body']) ?></div>
+                <div class="content markdown-shell"><?php render_engine_markdown($comment['body_vault'] ?? ($comment['body_html'] ?? null), $comment['body'] ?? ''); ?></div>
                 <?php render_reaction_summary($comment); ?>
                 <?php render_reaction_sticker_form($comment['signature'] ?? '', 'comment', ['blog_signature' => $blogId, 'comment_signature' => $comment['signature'] ?? '']); ?>
                 <?php if (($comment['author_signature'] ?? '') === current_signature() || is_admin()): ?>

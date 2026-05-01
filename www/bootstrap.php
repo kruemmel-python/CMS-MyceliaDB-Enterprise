@@ -68,6 +68,30 @@ function e(mixed $value): string {
     return htmlspecialchars(mycelia_scalar_text($value), ENT_QUOTES, 'UTF-8');
 }
 
+function render_engine_markdown(mixed $fragment, mixed $fallback = ''): void {
+    // v1.21.25: PHP is public-Markdown-blind again.
+    // Preferred path: Engine returns a client-side encrypted Markdown vault.
+    // PHP emits only a ciphertext capsule for browser-side decrypt+render.
+    if (is_array($fragment) && ($fragment['version'] ?? '') === 'client_markdown_vault_v1') {
+        $json = json_encode($fragment, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $b64 = base64_encode($json ?: '{}');
+        echo '<article class="markdown-body markdown-vault" data-markdown-vault="' . e($b64) . '"><p class="muted">Markdown wird lokal im Browser entschlüsselt …</p></article>';
+        return;
+    }
+    if (is_array($fragment) && ($fragment['policy'] ?? '') === 'engine-safe-markdown-html') {
+        // Legacy compatibility only. New web-created Forum/Blog content should not use this path.
+        echo strval($fragment['text'] ?? '');
+        return;
+    }
+    // No plaintext fallback for public pages unless a legacy direct-engine caller explicitly provided it.
+    $plain = mycelia_scalar_text($fallback !== '' ? $fallback : $fragment);
+    if ($plain !== '') {
+        echo '<article class="markdown-body legacy-markdown"><p>' . nl2br(e($plain)) . '</p></article>';
+    } else {
+        echo '<article class="markdown-body"><p class="muted">Kein clientseitiges Markdown-Paket vorhanden.</p></article>';
+    }
+}
+
 function mycelia_url_component(mixed $value): string {
     return urlencode(mycelia_scalar_text($value));
 }
@@ -536,12 +560,17 @@ function layout_header(mixed $title): void {
         ? '<a href="profile.php">' . e(txt('nav.profile')) . '</a><a href="profile.php#messages">Nachrichten</a><a href="fun.php">Spaß-Plugins</a><a href="dashboard.php">Live-Dashboard</a><a href="e2ee.php">E2EE</a><a href="webauthn.php">WebAuthn</a><a href="forum.php">' . e(txt('nav.forum')) . '</a><a href="blogs.php">' . e(txt('nav.blogs')) . '</a><a href="my_blog.php">' . e(txt('nav.my_blog')) . '</a><a href="privacy.php">' . e(txt('nav.privacy')) . '</a>' . (is_admin() ? '<a href="plugins.php">' . e(txt('nav.plugins')) . '</a><a href="admin.php">' . e(txt('nav.admin')) . '</a>' : '') . '<a href="logout.php">' . e(txt('nav.logout')) . '</a>'
         : '<a href="index.php">' . e(txt('nav.login')) . '</a>';
     echo "<!doctype html><html lang='de'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>";
-    echo "<title>" . e(mycelia_scalar_text($title, "MyceliaDB")) . " | MyceliaDB</title><link rel='stylesheet' href='assets/style.css'></head><body>";
+    echo "<title>" . e(mycelia_scalar_text($title, "MyceliaDB")) . " | MyceliaDB</title><link rel='stylesheet' href='assets/style.css'><script defer src='assets/client-markdown-vault.js'></script><script defer src='assets/markdown-copy.js'></script></head><body>";
     echo "<header class='topbar'><a class='brand' href='index.php'>" . e(txt('brand.name')) . "</a><nav>{$navAuth}</nav></header>";
     if ($flash) {
         echo "<div class='flash " . e($flash['type']) . "'>" . e($flash['message']) . "</div>";
     }
-    echo "<main class='page'>";
+    $pageClass = 'page';
+    if (!empty($GLOBALS['MYCELIA_PAGE_CLASS']) && is_string($GLOBALS['MYCELIA_PAGE_CLASS'])) {
+        $safeClass = preg_replace('/[^a-zA-Z0-9_\- ]/', '', $GLOBALS['MYCELIA_PAGE_CLASS']);
+        $pageClass .= ' ' . trim((string)$safeClass);
+    }
+    echo "<main class='" . e($pageClass) . "'>";
 }
 
 
@@ -616,7 +645,7 @@ function e2ee_render_mailbox(array $messages, string $mailbox): void {
 
 
 function layout_footer(): void {
-    echo "</main><footer class='footer'>" . e(txt('footer.text')) . "</footer><script src='assets/e2ee.js' defer></script><script src='assets/direct-ingest.js' defer></script><script src='assets/webauthn.js' defer></script></body></html>";
+    echo "</main><footer class='footer'>" . e(txt('footer.text')) . "</footer><script src='assets/e2ee.js' defer></script><script src='assets/direct-ingest.js' defer></script><script src='assets/webauthn.js' defer></script><script src='assets/markdown-copy.js' defer></script></body></html>";
 }
 
 function fmt_time(mixed $ts): string {

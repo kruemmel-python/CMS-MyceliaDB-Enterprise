@@ -18,6 +18,7 @@ if (isset($_POST['delete_thread'])) {
     redirect('forum.php');
 }
 $threads = require_mycelia_ok(call_mycelia('list_forum_threads', ['limit' => 200]))['threads'] ?? [];
+$GLOBALS['MYCELIA_PAGE_CLASS'] = 'doc-readme';
 layout_header(txt('forum.title'));
 ?>
 <section class="split">

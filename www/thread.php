@@ -65,6 +65,7 @@ if (isset($_POST['react'])) {
 $thread = require_mycelia_ok(call_mycelia('get_forum_thread', ['signature' => $id]))['thread'];
 $comments = require_mycelia_ok(call_mycelia('list_comments', ['target_signature' => $id]))['comments'] ?? [];
 $canEdit = ($thread['author_signature'] ?? '') === current_signature() || is_admin();
+$GLOBALS['MYCELIA_PAGE_CLASS'] = 'doc-readme';
 layout_header($thread['title'] ?? 'Thread');
 ?>
 <section class="split">
@@ -82,7 +83,7 @@ layout_header($thread['title'] ?? 'Thread');
             <h1><?= e($thread['title']) ?></h1>
             <div class="meta"><span>von <?= e($thread['author_username']) ?></span><span><?= e(fmt_time($thread['created_at'])) ?></span></div>
             <?php render_reaction_summary($thread); ?>
-            <div class="content"><?= e($thread['body']) ?></div>
+            <div class="content markdown-shell"><?php render_engine_markdown($thread['body_vault'] ?? ($thread['body_html'] ?? null), $thread['body'] ?? ''); ?></div>
             <?php render_media_gallery($thread['media'] ?? []); ?>
             <?php render_reaction_sticker_form($thread['signature'] ?? '', 'forum_thread'); ?>
             <?= ownership_actions(mycelia_identity($thread['author_signature'] ?? ''), 'thread.php?id=' . mycelia_url_component($thread['signature'] ?? '') . '&edit=1', 'delete_thread', $thread['signature']) ?>
@@ -108,7 +109,7 @@ layout_header($thread['title'] ?? 'Thread');
     <?php foreach ($comments as $comment): ?>
         <article class="card">
             <div class="meta"><span><?= e($comment['author_username']) ?></span><span><?= e(fmt_time($comment['created_at'])) ?></span></div>
-            <div class="content"><?= e($comment['body']) ?></div>
+            <div class="content markdown-shell"><?php render_engine_markdown($comment['body_vault'] ?? ($comment['body_html'] ?? null), $comment['body'] ?? ''); ?></div>
             <?php render_reaction_summary($comment); ?>
             <?php render_reaction_sticker_form($comment['signature'] ?? '', 'comment', ['comment_signature' => $comment['signature'] ?? '']); ?>
             <?php if (($comment['author_signature'] ?? '') === current_signature() || is_admin()): ?>

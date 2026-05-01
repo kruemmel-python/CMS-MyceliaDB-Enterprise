@@ -9,6 +9,7 @@ if (!empty($_POST['sealed_ingest']) && !empty($_POST['direct_op'])) {
 }
 
 $blogs = require_mycelia_ok(call_mycelia('list_blogs', []))['blogs'] ?? [];
+$GLOBALS['MYCELIA_PAGE_CLASS'] = 'doc-readme';
 layout_header(txt('blogs.title'));
 ?>
 <section class="panel">
@@ -19,7 +20,7 @@ layout_header(txt('blogs.title'));
 <?php foreach ($blogs as $blog): ?>
     <article class="card">
         <h2><a href="blog.php?id=<?= e($blog['signature']) ?>"><?= e($blog['title']) ?></a> <?php render_blog_theme_badge($blog); ?></h2>
-        <p><?= e($blog['description']) ?></p>
+        <div class="content markdown-shell"><?php render_engine_markdown($blog['description_vault'] ?? ($blog['description_html'] ?? null), $blog['description'] ?? ''); ?></div>
         <div class="meta"><span>von <?= e($blog['owner_username']) ?></span><span><?= e($blog['posts']) ?> Beiträge</span><span>💬 <?= e($blog['comments'] ?? 0) ?></span><span>🖼️ <?= e($blog['media_count'] ?? 0) ?></span><span><?= e(fmt_time($blog['updated_at'])) ?></span></div>
         <?php render_reaction_summary($blog); ?>
         <?php render_media_gallery($blog['media_preview'] ?? $blog['media'] ?? []); ?>

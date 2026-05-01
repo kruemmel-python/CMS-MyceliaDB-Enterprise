@@ -48,6 +48,76 @@
     return b64(buf);
   }
 
+  async function sha256Hex(text) {
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", te.encode(text)));
+    return Array.from(digest).map(b => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  async function derivePublicMarkdownVaultKey(salt) {
+    // Public display vault: prevents PHP/server plaintext materialization for public
+    // Markdown. This is not E2EE; it is a client-side rendering vault for public content.
+    const material = "myceliadb-public-markdown-vault-v1|" + location.origin;
+    const baseKey = await crypto.subtle.importKey("raw", te.encode(material), "PBKDF2", false, ["deriveKey"]);
+    return crypto.subtle.deriveKey(
+      {name: "PBKDF2", hash: "SHA-256", salt, iterations: 120000},
+      baseKey,
+      {name: "AES-GCM", length: 256},
+      false,
+      ["encrypt"]
+    );
+  }
+
+  async function makeMarkdownVault(field, value, op) {
+    const plaintext = String(value || "");
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const aad = "myceliadb-client-markdown-vault-v1|" + op + "|" + field;
+    const key = await derivePublicMarkdownVaultKey(salt);
+    const ciphertext = new Uint8Array(await crypto.subtle.encrypt(
+      {name: "AES-GCM", iv, additionalData: te.encode(aad)},
+      key,
+      te.encode(plaintext)
+    ));
+    return {
+      version: "client_markdown_vault_v1",
+      alg: "PBKDF2-SHA256/AES-256-GCM",
+      field,
+      markdown: true,
+      display_vault: true,
+      aad,
+      salt_b64: b64(salt),
+      iv_b64: b64(iv),
+      ciphertext_b64: b64(ciphertext),
+      sha256: await sha256Hex(plaintext),
+      created_at_ms: Date.now()
+    };
+  }
+
+  async function vaultPublicMarkdownFields(op, payload) {
+    if (!crypto.subtle) return payload;
+    const fieldsByOp = {
+      create_forum_thread: ["body"],
+      update_forum_thread: ["body"],
+      create_comment: ["body"],
+      update_comment: ["body"],
+      create_blog: ["description"],
+      update_blog: ["description"],
+      create_blog_post: ["body"],
+      update_blog_post: ["body"]
+    };
+    const fields = fieldsByOp[op] || [];
+    if (!fields.length) return payload;
+    const out = {...payload};
+    for (const field of fields) {
+      if (!Object.prototype.hasOwnProperty.call(out, field)) continue;
+      const value = String(out[field] || "");
+      if (!value) continue;
+      out[`${field}_vault_json`] = JSON.stringify(await makeMarkdownVault(field, value, op));
+      delete out[field];
+    }
+    return out;
+  }
+
 
 
   async function derivePfsAesKey(manifest, salt) {
@@ -206,7 +276,7 @@
     const op = (button && button.dataset && button.dataset.directOp) ? button.dataset.directOp : form.dataset.directOp;
 
     try {
-      const payload = await collectPayload(form, button);
+      const payload = await vaultPublicMarkdownFields(op, await collectPayload(form, button));
       const envelope = await seal(op, payload);
       ensureHidden(form, "direct_op").value = op;
       ensureHidden(form, "sealed_ingest").value = JSON.stringify(envelope);

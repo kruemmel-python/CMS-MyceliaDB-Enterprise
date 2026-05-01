@@ -71,6 +71,7 @@ if (!empty($_GET['edit_post'])) {
     $postResponse = call_mycelia('get_blog_post', ['signature' => $_GET['edit_post']]);
     if (($postResponse['status'] ?? '') === 'ok') $editPost = $postResponse['post'];
 }
+$GLOBALS['MYCELIA_PAGE_CLASS'] = 'doc-readme';
 layout_header(txt('my_blog.title'));
 ?>
 <section class="split">
