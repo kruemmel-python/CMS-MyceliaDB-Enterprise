@@ -1,0 +1,24 @@
+{
+  "version": "MYCELIA_NATIVE_AUTHENTICITY_V1",
+  "generated_at": 1777586754.0460744,
+  "libraries": {
+    "core_opencl_driver": {
+      "role": "core_opencl_driver",
+      "path": "build\\CC_OpenCl.dll",
+      "sha256": "d89219dcb39051537f5defbc8e771ae34499f66a9e533be7cda6909070fd4720",
+      "algorithm": "sha256"
+    },
+    "native_gpu_envelope": {
+      "role": "native_gpu_envelope",
+      "path": "build\\mycelia_gpu_envelope.dll",
+      "sha256": "e02d3ddf81d13fd5f58e13161acffe8dfabf9135ee2ac15d6ac76e842f90da5b",
+      "algorithm": "sha256"
+    },
+    "native_gpu_envelope:native": {
+      "role": "native_gpu_envelope",
+      "path": "html\\native\\mycelia_gpu_envelope.dll",
+      "sha256": "0f0419072e5fc250ad0b2b6517640f2376eb63d2bdfd64bb6ac56ea6361c80a8",
+      "algorithm": "sha256"
+    }
+  }
+}

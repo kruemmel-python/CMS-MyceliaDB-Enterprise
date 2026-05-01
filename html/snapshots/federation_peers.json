@@ -1,0 +1,13 @@
+{
+  "version": "MYCELIA_FEDERATION_V1",
+  "peers": {
+    "node-b": {
+      "peer_id": "node-b",
+      "url": "https://node-b.local:9999",
+      "cert_fingerprint": "",
+      "enabled": true,
+      "last_seen": 0,
+      "trust": "mtls-fingerprint-pinned"
+    }
+  }
+}
