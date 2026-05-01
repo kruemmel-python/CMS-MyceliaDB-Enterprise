@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html
 import http.server
 import json
 import logging
@@ -97,6 +98,8 @@ AUTOSAVE_ENABLED = os.environ.get("MYCELIA_AUTOSAVE", "1").lower() not in {"0", 
 AUTORESTORE_ENABLED = os.environ.get("MYCELIA_AUTORESTORE", "1").lower() not in {"0", "false", "no", "off"}
 INGEST_KEY_PATH = Path(os.environ.get("MYCELIA_INGEST_KEY_PATH", str(ROOT / "keys" / "ingest_private.pem"))).resolve()
 DIRECT_INGEST_MAX_AGE_SECONDS = int(os.environ.get("MYCELIA_DIRECT_INGEST_MAX_AGE_SECONDS", "300"))
+PUBLIC_MARKDOWN_RENDER_LIMIT = int(os.environ.get("MYCELIA_PUBLIC_MARKDOWN_RENDER_LIMIT", "2000000"))
+PUBLIC_TEXT_STORAGE_LIMIT = int(os.environ.get("MYCELIA_PUBLIC_TEXT_STORAGE_LIMIT", "2000000"))
 STRICT_VRAM_ONLY = os.environ.get("MYCELIA_STRICT_VRAM_ONLY", "0").lower() in {"1", "true", "yes", "on"}
 DIRECT_INGEST_ALLOWED_OPS = {
     "register_user",
@@ -1642,7 +1645,7 @@ class MyceliaPlatform:
                 return {
                     "target_signature": data.get("target_signature") or data.get("post_signature") or "",
                     "target_type": data.get("target_type") or ("blog_post" if data.get("post_signature") else "forum_thread"),
-                    "body": data.get("body", ""),
+                    "body": data.get("body", ""), "body_vault_json": data.get("body_vault_json", ""),
                 }
             case "delete_comment" | "update_comment":
                 return {"signature": data.get("signature") or data.get("comment_signature") or "", "body": data.get("body", "")}
@@ -1650,7 +1653,7 @@ class MyceliaPlatform:
                 return {
                     "signature": data.get("signature") or data.get("blog_signature") or "",
                     "title": data.get("title", ""),
-                    "description": data.get("description", ""),
+                    "description": data.get("description", ""), "description_vault_json": data.get("description_vault_json", ""),
                     "blog_theme": data.get("blog_theme", ""),
                     **media_fields,
                 }
@@ -1659,7 +1662,7 @@ class MyceliaPlatform:
             case "create_blog":
                 return {
                     "title": data.get("title", ""),
-                    "description": data.get("description", ""),
+                    "description": data.get("description", ""), "description_vault_json": data.get("description_vault_json", ""),
                     "blog_theme": data.get("blog_theme", ""),
                     **media_fields,
                 }
@@ -1667,7 +1670,7 @@ class MyceliaPlatform:
                 return {
                     "blog_signature": data.get("blog_signature", ""),
                     "title": data.get("title", ""),
-                    "body": data.get("body", ""),
+                    "body": data.get("body", ""), "body_vault_json": data.get("body_vault_json", ""),
                     "publish_status": data.get("publish_status", "published"),
                     **media_fields,
                 }
@@ -1675,7 +1678,7 @@ class MyceliaPlatform:
                 return {
                     "signature": data.get("signature") or data.get("post_signature") or "",
                     "title": data.get("title", ""),
-                    "body": data.get("body", ""),
+                    "body": data.get("body", ""), "body_vault_json": data.get("body_vault_json", ""),
                     "publish_status": data.get("publish_status", "published"),
                     **media_fields,
                 }
@@ -1744,7 +1747,7 @@ class MyceliaPlatform:
             case "vote_poll":
                 return {"poll_signature": data.get("poll_signature", ""), "option_id": data.get("option_id", "")}
             case "create_time_capsule":
-                return {"title": data.get("title", ""), "body": data.get("body", ""), "reveal_at": data.get("reveal_at", ""), "visibility": data.get("visibility", "private")}
+                return {"title": data.get("title", ""), "body": data.get("body", ""), "body_vault_json": data.get("body_vault_json", ""), "reveal_at": data.get("reveal_at", ""), "visibility": data.get("visibility", "private")}
             case "vram_residency_audit":
                 probes_raw = str(data.get("probes", ""))
                 probes = [p.strip() for p in re.split(r"[\r\n,]+", probes_raw) if p.strip()]
@@ -1762,7 +1765,7 @@ class MyceliaPlatform:
                 return {
                     "signature": data.get("signature") or data.get("target_signature") or "",
                     "title": data.get("title", ""),
-                    "body": data.get("body", ""),
+                    "body": data.get("body", ""), "body_vault_json": data.get("body_vault_json", ""),
                     **media_fields,
                 }
             case _:
@@ -2285,12 +2288,268 @@ class MyceliaPlatform:
             raise ValueError("author_signature ist erforderlich.")
         return author_signature, author_username
 
+    def _limit_public_text(self, value: Any, field_name: str = "text") -> str:
+        text = str(value or "").strip()
+        if len(text) > PUBLIC_TEXT_STORAGE_LIMIT:
+            raise ValueError(
+                f"{field_name} ist zu lang ({len(text)} Zeichen, max {PUBLIC_TEXT_STORAGE_LIMIT}). "
+                "Bitte als Datei/Medium anhängen oder MYCELIA_PUBLIC_TEXT_STORAGE_LIMIT erhöhen."
+            )
+        return text
+
     def _content_packet(self, payload: Mapping[str, Any], key_prefix: str = "content") -> tuple[str, str, str]:
         packet = self._encrypt_json(dict(payload))
         return packet.seed, packet.blob, packet.mode
 
     def _decrypt_content(self, row: Mapping[str, Any], prefix: str = "content") -> dict[str, Any]:
         return self._decrypt_json({"seed": row[f"{prefix}_seed"], "blob": row[f"{prefix}_blob"]})
+
+    def _parse_client_markdown_vault(self, value: Any, field: str = "body") -> dict[str, Any] | None:
+        if not value:
+            return None
+        if isinstance(value, str):
+            try:
+                data = json.loads(value)
+            except Exception as exc:
+                raise ValueError(f"Ungültige Client-Markdown-Vault für {field}: {exc}") from exc
+        elif isinstance(value, Mapping):
+            data = dict(value)
+        else:
+            raise ValueError(f"Ungültige Client-Markdown-Vault für {field}")
+        if data.get("version") != "client_markdown_vault_v1":
+            raise ValueError("Unbekannte Client-Markdown-Vault-Version")
+        required = ("ciphertext_b64", "iv_b64", "salt_b64", "aad", "sha256")
+        missing = [key for key in required if not str(data.get(key, "")).strip()]
+        if missing:
+            raise ValueError("Unvollständige Client-Markdown-Vault: " + ", ".join(missing))
+        return {
+            "version": "client_markdown_vault_v1",
+            "alg": str(data.get("alg", "PBKDF2-SHA256/AES-256-GCM")),
+            "field": field,
+            "ciphertext_b64": str(data["ciphertext_b64"]),
+            "iv_b64": str(data["iv_b64"]),
+            "salt_b64": str(data["salt_b64"]),
+            "aad": str(data["aad"]),
+            "sha256": str(data["sha256"]),
+            "created_at_ms": int(float(data.get("created_at_ms", 0) or 0)),
+            "markdown": bool(data.get("markdown", True)),
+            "display_vault": True,
+        }
+
+    def _content_vault_from_payload(self, payload: Mapping[str, Any], field: str = "body") -> dict[str, Any] | None:
+        return self._parse_client_markdown_vault(payload.get(f"{field}_vault_json") or payload.get(f"{field}_vault"), field)
+
+    def _store_content_from_payload(self, row: dict[str, Any], payload: Mapping[str, Any], field: str, label: str, *, required: bool = True) -> tuple[bool, str]:
+        """Store public text as browser-side encrypted Markdown vault when present.
+
+        Normal web forms use direct-ingest.js to replace body/description with
+        field_vault_json before the sealed payload reaches the Engine. In that
+        path neither PHP nor the Python Engine materialize the public Markdown
+        plaintext during normal storage or display. Legacy direct engine callers
+        are still supported for compatibility and tests, but those records are
+        marked as legacy server packets.
+        """
+        vault = self._content_vault_from_payload(payload, field)
+        if vault:
+            row[f"{field}_vault"] = vault
+            row[f"{field}_storage"] = "client_markdown_vault_v1"
+            # Remove legacy encrypted-content fields if this is an update.
+            row.pop("content_seed", None)
+            row.pop("content_blob", None)
+            row.pop("crypto_mode", None)
+            return True, "client_markdown_vault_v1"
+
+        text = self._limit_public_text(payload.get(field, ""), label)
+        if required and not text:
+            return False, ""
+        if text:
+            seed, blob, mode = self._content_packet({field: text}, "content")
+            row["content_seed"] = seed
+            row["content_blob"] = blob
+            row["crypto_mode"] = mode
+            row[f"{field}_storage"] = "legacy_engine_packet"
+            return True, "legacy_engine_packet"
+        return True, "empty"
+
+    def _content_response_fields(self, row: Mapping[str, Any], field: str = "body") -> dict[str, Any]:
+        vault = row.get(f"{field}_vault")
+        if isinstance(vault, Mapping):
+            return {
+                f"{field}_vault": dict(vault),
+                f"{field}_storage": "client_markdown_vault_v1",
+                "php_plaintext_safe": True,
+                "engine_display_plaintext_materialized": False,
+            }
+        if row.get("content_seed") and row.get("content_blob"):
+            # Compatibility path for older records and direct unit-test records.
+            # The normal web path no longer uses this for new Forum/Blog content.
+            try:
+                content = self._decrypt_content(row)
+            except Exception as exc:
+                return {
+                    field: f"[Integritätsfehler: {exc}]",
+                    f"{field}_storage": "legacy_engine_packet_error",
+                    "php_plaintext_safe": False,
+                    "engine_display_plaintext_materialized": False,
+                }
+            value = content.get(field, "")
+            return {
+                field: value,
+                f"{field}_html": self._markdown_fragment(value),
+                f"{field}_storage": "legacy_engine_packet",
+                "php_plaintext_safe": False,
+                "engine_display_plaintext_materialized": True,
+            }
+        return {field: "", f"{field}_storage": "empty", "php_plaintext_safe": True, "engine_display_plaintext_materialized": False}
+
+    def _sanitize_markdown_lang(self, value: str) -> str:
+        lang = re.sub(r"[^A-Za-z0-9_+-]", "", str(value or "").strip().lower())[:32]
+        return lang
+
+    def _markdown_inline(self, text: str) -> str:
+        """Small safe inline renderer for public markdown.
+
+        Raw HTML is never passed through. This keeps the PHP layer out of
+        plaintext parsing and returns an engine-sanitized fragment.
+        """
+        escaped = html.escape(str(text or ""), quote=True)
+
+        def inline_code(match: re.Match[str]) -> str:
+            return "<code>" + html.escape(match.group(1), quote=True) + "</code>"
+
+        escaped = re.sub(r"`([^`\n]+)`", inline_code, escaped)
+
+        def link(match: re.Match[str]) -> str:
+            label = match.group(1)
+            url = html.unescape(match.group(2)).strip()
+            if not re.match(r"^https?://[^\s<>\"]{1,500}$", url, re.IGNORECASE):
+                return label
+            return f'<a href="{html.escape(url, quote=True)}" rel="nofollow noopener noreferrer" target="_blank">{label}</a>'
+
+        escaped = re.sub(r"\[([^\]\n]{1,160})\]\((https?://[^\s\)<>\"]{1,500})\)", link, escaped)
+        escaped = re.sub(r"\*\*([^*\n]{1,240})\*\*", r"<strong>\1</strong>", escaped)
+        escaped = re.sub(r"(?<!\*)\*([^*\n]{1,180})\*(?!\*)", r"<em>\1</em>", escaped)
+        return escaped
+
+    def _markdown_to_safe_html(self, source: Any) -> str:
+        text = str(source or "")
+        # UI render cap is intentionally high: Forum/Blog long-form Markdown should render
+        # fully for normal documentation-sized posts. Storage is protected separately by
+        # PUBLIC_TEXT_STORAGE_LIMIT and Direct-Ingest/PHP transport still stays sealed.
+        if PUBLIC_MARKDOWN_RENDER_LIMIT > 0 and len(text) > PUBLIC_MARKDOWN_RENDER_LIMIT:
+            text = text[:PUBLIC_MARKDOWN_RENDER_LIMIT] + "\n\n[gekürzt: Render-Limit erreicht]"
+        lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        out: list[str] = []
+        paragraph: list[str] = []
+        in_code = False
+        code_lang = ""
+        code_lines: list[str] = []
+
+        def flush_paragraph() -> None:
+            nonlocal paragraph
+            if paragraph:
+                joined = " ".join(part.strip() for part in paragraph if part.strip())
+                if joined:
+                    out.append('<p>' + self._markdown_inline(joined) + '</p>')
+                paragraph = []
+
+        def render_code() -> None:
+            nonlocal code_lines, code_lang
+            code_text = "\n".join(code_lines)
+            lang = self._sanitize_markdown_lang(code_lang)
+            label = html.escape(lang or "code", quote=True)
+            cls = f' class="language-{html.escape(lang, quote=True)}"' if lang else ""
+            out.append(
+                '<div class="md-codeblock">'
+                '<div class="md-codebar"><span>' + label + '</span>'
+                '<button type="button" class="md-copy-code" aria-label="Code kopieren">Kopieren</button></div>'
+                '<pre><code' + cls + '>' + html.escape(code_text, quote=False) + '</code></pre>'
+                '</div>'
+            )
+            code_lines = []
+            code_lang = ""
+
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+
+            if in_code:
+                if stripped.startswith("```"):
+                    render_code()
+                    in_code = False
+                else:
+                    code_lines.append(line)
+                i += 1
+                continue
+
+            if stripped.startswith("```"):
+                flush_paragraph()
+                in_code = True
+                code_lang = stripped[3:].strip()
+                code_lines = []
+                i += 1
+                continue
+
+            if stripped == "":
+                flush_paragraph()
+                i += 1
+                continue
+
+            heading = re.match(r"^(#{1,6})\s+(.+)$", stripped)
+            if heading:
+                flush_paragraph()
+                level = min(len(heading.group(1)), 6)
+                out.append(f'<h{level}>' + self._markdown_inline(heading.group(2).strip()) + f'</h{level}>')
+                i += 1
+                continue
+
+            quote = re.match(r"^>\s?(.*)$", stripped)
+            if quote:
+                flush_paragraph()
+                quote_lines = [quote.group(1)]
+                i += 1
+                while i < len(lines):
+                    q = re.match(r"^>\s?(.*)$", lines[i].strip())
+                    if not q:
+                        break
+                    quote_lines.append(q.group(1))
+                    i += 1
+                out.append('<blockquote>' + "".join('<p>' + self._markdown_inline(qline) + '</p>' for qline in quote_lines if qline.strip()) + '</blockquote>')
+                continue
+
+            list_match = re.match(r"^[-*]\s+(.+)$", stripped)
+            ordered_match = re.match(r"^\d+[.)]\s+(.+)$", stripped)
+            if list_match or ordered_match:
+                flush_paragraph()
+                tag = "ol" if ordered_match else "ul"
+                items: list[str] = []
+                while i < len(lines):
+                    candidate = lines[i].strip()
+                    m = re.match(r"^[-*]\s+(.+)$", candidate) if tag == "ul" else re.match(r"^\d+[.)]\s+(.+)$", candidate)
+                    if not m:
+                        break
+                    items.append('<li>' + self._markdown_inline(m.group(1).strip()) + '</li>')
+                    i += 1
+                out.append(f'<{tag}>' + "".join(items) + f'</{tag}>')
+                continue
+
+            paragraph.append(line)
+            i += 1
+
+        if in_code:
+            render_code()
+        flush_paragraph()
+        if not out:
+            return ""
+        return '<article class="markdown-body">' + "\n".join(out) + '</article>'
+
+    def _markdown_fragment(self, source: Any) -> dict[str, Any]:
+        return {
+            "policy": "engine-safe-markdown-html",
+            "renderer": "mycelia_markdown_v1_21_23",
+            "text": self._markdown_to_safe_html(source),
+        }
 
     def _get_record_or_error(self, signature: str, table: str | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
         record = self.core.get_sql_record(signature)
@@ -2347,23 +2606,21 @@ class MyceliaPlatform:
             return err
         author_signature, author_username = self._public_author(payload)
         title = str(payload.get("title", "")).strip()
-        body = str(payload.get("body", "")).strip()
-        if not title or not body:
+        if not title:
             return {"status": "error", "message": "Titel und Beitrag sind erforderlich."}
-        seed, blob, mode = self._content_packet({"body": body}, "content")
         now = self._now()
         row = {
             "node_type": "forum_thread",
             "title": title[:240],
             "author_signature": author_signature,
             "author_username": author_username,
-            "content_seed": seed,
-            "content_blob": blob,
-            "crypto_mode": mode,
             "created_at": now,
             "updated_at": now,
             "deleted": False,
         }
+        ok_content, storage = self._store_content_from_payload(row, payload, "body", "Forum-Beitrag", required=True)
+        if not ok_content:
+            return {"status": "error", "message": "Titel und Beitrag sind erforderlich."}
         row.update(self._ephemeral_fields_from_payload(payload))
         pattern = self.core.database.store_sql_record(FORUM_TABLE, row, stability=0.965, mood_vector=(0.90, 0.05, 0.86))
         media_signatures = self._store_media_from_payload(payload, target_signature=pattern.signature, target_type="forum_thread")
@@ -2405,13 +2662,13 @@ class MyceliaPlatform:
             record, row = self._get_record_or_error(signature, FORUM_TABLE)
             if row.get("deleted"):
                 return {"status": "error", "message": "Beitrag wurde gelöscht."}
-            content = self._decrypt_content(row)
+            content_fields = self._content_response_fields(row, "body")
             counts = self._reaction_counts(signature)
             media = self.list_media_for_content({"target_signature": signature}).get("media", [])
             return {"status": "ok", "thread": {
                 "signature": signature,
                 "title": row.get("title"),
-                "body": content.get("body", ""),
+                **content_fields,
                 "author_username": row.get("author_username"),
                 "author_signature": row.get("author_signature"),
                 "created_at": row.get("created_at"),
@@ -2428,15 +2685,16 @@ class MyceliaPlatform:
         actor = str(payload.get("actor_signature", "")).strip()
         actor_role = str(payload.get("actor_role", "")).strip()
         title = str(payload.get("title", "")).strip()
-        body = str(payload.get("body", "")).strip()
-        if not title or not body:
+        if not title:
             return {"status": "error", "message": "Titel und Beitrag sind erforderlich."}
         try:
             _, row = self._get_record_or_error(signature, FORUM_TABLE)
             if not self._owner_matches(row, actor, allow_admin=True, actor_role=actor_role):
                 return {"status": "error", "message": "Keine Berechtigung zum Ändern."}
-            seed, blob, mode = self._content_packet({"body": body}, "content")
-            row.update({"title": title[:240], "content_seed": seed, "content_blob": blob, "crypto_mode": mode, "updated_at": self._now()})
+            ok_content, storage = self._store_content_from_payload(row, payload, "body", "Forum-Beitrag", required=True)
+            if not ok_content:
+                return {"status": "error", "message": "Titel und Beitrag sind erforderlich."}
+            row.update({"title": title[:240], "updated_at": self._now()})
             media_signatures = self._store_media_from_payload(payload, target_signature=signature, target_type="forum_thread")
             ok = self.core.update_sql_record(signature, row, stability=0.975, mood_vector=(0.91, 0.04, 0.88))
             save = self.autosave_snapshot("update_forum_thread") if ok else {"status": "skipped"}
@@ -2470,10 +2728,8 @@ class MyceliaPlatform:
         author_signature, author_username = self._public_author(payload)
         target_signature = str(payload.get("target_signature", "")).strip()
         target_type = str(payload.get("target_type", "forum_thread")).strip()
-        body = str(payload.get("body", "")).strip()
-        if not target_signature or not body:
+        if not target_signature:
             return {"status": "error", "message": "Ziel und Kommentar sind erforderlich."}
-        seed, blob, mode = self._content_packet({"body": body}, "content")
         now = self._now()
         row = {
             "node_type": "comment",
@@ -2481,13 +2737,13 @@ class MyceliaPlatform:
             "target_type": target_type,
             "author_signature": author_signature,
             "author_username": author_username,
-            "content_seed": seed,
-            "content_blob": blob,
-            "crypto_mode": mode,
             "created_at": now,
             "updated_at": now,
             "deleted": False,
         }
+        ok_content, storage = self._store_content_from_payload(row, payload, "body", "Kommentar", required=True)
+        if not ok_content:
+            return {"status": "error", "message": "Ziel und Kommentar sind erforderlich."}
         row.update(self._ephemeral_fields_from_payload(payload))
         pattern = self.core.database.store_sql_record(COMMENT_TABLE, row, stability=0.94, mood_vector=(0.84, 0.08, 0.76))
         save = self.autosave_snapshot("create_comment")
@@ -2502,10 +2758,7 @@ class MyceliaPlatform:
         comments: list[dict[str, Any]] = []
         for record in records:
             row = record["data"]
-            try:
-                content = self._decrypt_content(row)
-            except Exception as exc:
-                content = {"body": f"[Integritätsfehler: {exc}]"}
+            content_fields = self._content_response_fields(row, "body")
             counts = self._reaction_counts(record["signature"])
             comments.append({
                 "signature": record["signature"],
@@ -2513,7 +2766,7 @@ class MyceliaPlatform:
                 "target_type": row.get("target_type"),
                 "author_username": row.get("author_username"),
                 "author_signature": row.get("author_signature"),
-                "body": content.get("body", ""),
+                **content_fields,
                 "created_at": row.get("created_at"),
                 "updated_at": row.get("updated_at"),
                 "stability": record.get("stability"),
@@ -2526,13 +2779,14 @@ class MyceliaPlatform:
         signature = str(payload.get("signature", "")).strip()
         actor = str(payload.get("actor_signature", "")).strip()
         actor_role = str(payload.get("actor_role", "")).strip()
-        body = str(payload.get("body", "")).strip()
         try:
             _, row = self._get_record_or_error(signature, COMMENT_TABLE)
             if not self._owner_matches(row, actor, allow_admin=True, actor_role=actor_role):
                 return {"status": "error", "message": "Keine Berechtigung zum Ändern."}
-            seed, blob, mode = self._content_packet({"body": body}, "content")
-            row.update({"content_seed": seed, "content_blob": blob, "crypto_mode": mode, "updated_at": self._now()})
+            ok_content, storage = self._store_content_from_payload(row, payload, "body", "Kommentar", required=True)
+            if not ok_content:
+                return {"status": "error", "message": "Kommentar ist erforderlich."}
+            row.update({"updated_at": self._now()})
             ok = self.core.update_sql_record(signature, row, stability=0.95)
             save = self.autosave_snapshot("update_comment") if ok else {"status": "skipped"}
             return {"status": "ok" if ok else "error", "autosave": save.get("status")}
@@ -2594,7 +2848,6 @@ class MyceliaPlatform:
             return err
         owner_signature, owner_username = self._public_author({"author_signature": payload.get("owner_signature") or payload.get("author_signature"), "author_username": payload.get("owner_username") or payload.get("author_username")})
         title = str(payload.get("title", "")).strip()
-        description = str(payload.get("description", "")).strip()
         blog_theme = self._normalize_blog_theme(payload.get("blog_theme", ""))
         if blog_theme and not self._is_plugin_enabled("blog_mood_themes"):
             return {"status": "error", "message": "Blog Mood Themes Plugin ist nicht aktiviert.", "plugin_id": "blog_mood_themes", "plugin_required": True}
@@ -2604,7 +2857,6 @@ class MyceliaPlatform:
         row = {
             "node_type": "blog",
             "title": title[:240],
-            "description": description[:1000],
             "blog_theme": blog_theme,
             "blog_theme_label": self._blog_theme_descriptor(blog_theme).get("label", ""),
             "blog_theme_emoji": self._blog_theme_descriptor(blog_theme).get("emoji", ""),
@@ -2614,6 +2866,9 @@ class MyceliaPlatform:
             "updated_at": now,
             "deleted": False,
         }
+        ok_content, storage = self._store_content_from_payload(row, payload, "description", "Blog-Beschreibung", required=False)
+        if not ok_content:
+            return {"status": "error", "message": "Blog-Beschreibung ist ungültig."}
         row.update(self._ephemeral_fields_from_payload(payload))
         pattern = self.core.database.store_sql_record(BLOG_TABLE, row, stability=0.96, mood_vector=(0.89, 0.04, 0.84))
         media_signatures = self._store_media_from_payload(payload, target_signature=pattern.signature, target_type="blog")
@@ -2641,7 +2896,7 @@ class MyceliaPlatform:
             blogs.append({
                 "signature": record["signature"],
                 "title": row.get("title"),
-                "description": row.get("description"),
+                **self._content_response_fields(row, "description"),
                 "blog_theme": row.get("blog_theme", ""),
                 "blog_theme_label": row.get("blog_theme_label", ""),
                 "blog_theme_emoji": row.get("blog_theme_emoji", ""),
@@ -2673,7 +2928,7 @@ class MyceliaPlatform:
             return {"status": "ok", "blog": {
                 "signature": signature,
                 "title": row.get("title"),
-                "description": row.get("description"),
+                **self._content_response_fields(row, "description"),
                 "blog_theme": row.get("blog_theme", ""),
                 "blog_theme_label": row.get("blog_theme_label", ""),
                 "blog_theme_emoji": row.get("blog_theme_emoji", ""),
@@ -2696,7 +2951,6 @@ class MyceliaPlatform:
         actor = str(payload.get("actor_signature", "")).strip()
         actor_role = str(payload.get("actor_role", "")).strip()
         title = str(payload.get("title", "")).strip()
-        description = str(payload.get("description", "")).strip()
         blog_theme = self._normalize_blog_theme(payload.get("blog_theme", ""))
         if blog_theme and not self._is_plugin_enabled("blog_mood_themes"):
             return {"status": "error", "message": "Blog Mood Themes Plugin ist nicht aktiviert.", "plugin_id": "blog_mood_themes", "plugin_required": True}
@@ -2704,10 +2958,12 @@ class MyceliaPlatform:
             _, row = self._get_record_or_error(signature, BLOG_TABLE)
             if not self._owner_matches(row, actor, allow_admin=True, actor_role=actor_role):
                 return {"status": "error", "message": "Keine Berechtigung."}
+            ok_content, storage = self._store_content_from_payload(row, payload, "description", "Blog-Beschreibung", required=False)
+            if not ok_content:
+                return {"status": "error", "message": "Blog-Beschreibung ist ungültig."}
             theme_desc = self._blog_theme_descriptor(blog_theme)
             row.update({
                 "title": title[:240],
-                "description": description[:1000],
                 "blog_theme": blog_theme,
                 "blog_theme_label": theme_desc.get("label", ""),
                 "blog_theme_emoji": theme_desc.get("emoji", ""),
@@ -2742,11 +2998,9 @@ class MyceliaPlatform:
         author_signature, author_username = self._public_author(payload)
         blog_signature = str(payload.get("blog_signature", "")).strip()
         title = str(payload.get("title", "")).strip()
-        body = str(payload.get("body", "")).strip()
         status = str(payload.get("publish_status", "published")).strip()
-        if not blog_signature or not title or not body:
+        if not blog_signature or not title:
             return {"status": "error", "message": "Blog, Titel und Inhalt sind erforderlich."}
-        seed, blob, mode = self._content_packet({"body": body}, "content")
         now = self._now()
         row = {
             "node_type": "blog_post",
@@ -2754,14 +3008,14 @@ class MyceliaPlatform:
             "title": title[:240],
             "author_signature": author_signature,
             "author_username": author_username,
-            "content_seed": seed,
-            "content_blob": blob,
-            "crypto_mode": mode,
             "publish_status": status,
             "created_at": now,
             "updated_at": now,
             "deleted": False,
         }
+        ok_content, storage = self._store_content_from_payload(row, payload, "body", "Blog-Beitrag", required=True)
+        if not ok_content:
+            return {"status": "error", "message": "Blog, Titel und Inhalt sind erforderlich."}
         row.update(self._ephemeral_fields_from_payload(payload))
         pattern = self.core.database.store_sql_record(BLOG_POST_TABLE, row, stability=0.965, mood_vector=(0.91, 0.05, 0.87))
         media_signatures = self._store_media_from_payload(payload, target_signature=pattern.signature, target_type="blog_post")
@@ -2809,14 +3063,14 @@ class MyceliaPlatform:
             record, row = self._get_record_or_error(signature, BLOG_POST_TABLE)
             if row.get("deleted"):
                 return {"status": "error", "message": "Blog-Beitrag wurde gelöscht."}
-            content = self._decrypt_content(row)
+            content_fields = self._content_response_fields(row, "body")
             counts = self._reaction_counts(signature)
             media = self.list_media_for_content({"target_signature": signature}).get("media", [])
             return {"status": "ok", "post": {
                 "signature": signature,
                 "blog_signature": row.get("blog_signature"),
                 "title": row.get("title"),
-                "body": content.get("body", ""),
+                **content_fields,
                 "author_signature": row.get("author_signature"),
                 "author_username": row.get("author_username"),
                 "publish_status": row.get("publish_status"),
@@ -2837,14 +3091,15 @@ class MyceliaPlatform:
         actor = str(payload.get("actor_signature", "")).strip()
         actor_role = str(payload.get("actor_role", "")).strip()
         title = str(payload.get("title", "")).strip()
-        body = str(payload.get("body", "")).strip()
         status = str(payload.get("publish_status", "published")).strip()
         try:
             _, row = self._get_record_or_error(signature, BLOG_POST_TABLE)
             if not self._owner_matches(row, actor, allow_admin=True, actor_role=actor_role):
                 return {"status": "error", "message": "Keine Berechtigung."}
-            seed, blob, mode = self._content_packet({"body": body}, "content")
-            row.update({"title": title[:240], "content_seed": seed, "content_blob": blob, "crypto_mode": mode, "publish_status": status, "updated_at": self._now()})
+            ok_content, storage = self._store_content_from_payload(row, payload, "body", "Blog-Beitrag", required=True)
+            if not ok_content:
+                return {"status": "error", "message": "Blog-Beitrag ist erforderlich."}
+            row.update({"title": title[:240], "publish_status": status, "updated_at": self._now()})
             media_signatures = self._store_media_from_payload(payload, target_signature=signature, target_type="blog_post")
             ok = self.core.update_sql_record(signature, row, stability=0.975)
             save = self.autosave_snapshot("update_blog_post") if ok else {"status": "skipped"}
@@ -6796,7 +7051,7 @@ class MyceliaPlatform:
             case "vote_poll":
                 return {"poll_signature": data.get("poll_signature", ""), "option_id": data.get("option_id", "")}
             case "create_time_capsule":
-                return {"title": data.get("title", ""), "body": data.get("body", ""), "reveal_at": data.get("reveal_at", ""), "visibility": data.get("visibility", "private")}
+                return {"title": data.get("title", ""), "body": data.get("body", ""), "body_vault_json": data.get("body_vault_json", ""), "reveal_at": data.get("reveal_at", ""), "visibility": data.get("visibility", "private")}
             case "vram_residency_audit":
                 result = self.vram_residency_audit(payload)
             case "residency_audit_manifest":

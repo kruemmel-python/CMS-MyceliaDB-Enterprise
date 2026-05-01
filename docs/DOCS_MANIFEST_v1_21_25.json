@@ -1,0 +1,21 @@
+{
+  "version": "1.21.25",
+  "generated_at": "2026-05-01T19:43:27Z",
+  "files": [
+    "Dokumentation.md",
+    "Dokumentation_v1_21_25.md",
+    "ENTERPRISE_WWW_README.md",
+    "ENTERPRISE_WWW_README_v1_21_25.md",
+    "Schnellstart.md",
+    "Schnellstart_v1_21_25.md",
+    "whitepaper.md",
+    "whitepaper_v1_21_25.md"
+  ],
+  "security_summary": [
+    "No percentage security claim.",
+    "Forum/blog pages require login before content path.",
+    "Client Markdown Vault: normal display renders in browser, not PHP.",
+    "Browser DOM of an authenticated user may contain cleartext by design.",
+    "DSGVO own-data export remains a documented cleartext exception."
+  ]
+}
