@@ -29,6 +29,7 @@ import ssl
 import struct
 import sys
 import time
+from datetime import datetime
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -84,6 +85,10 @@ E2EE_KEY_TABLE = "mycelia_e2ee_public_keys"
 E2EE_MESSAGE_TABLE = "mycelia_e2ee_messages"
 WEBAUTHN_CREDENTIAL_TABLE = "mycelia_webauthn_credentials"
 SECURITY_CANARY_TABLE = "mycelia_security_canaries"
+BADGE_TABLE = "mycelia_user_badges"
+POLL_TABLE = "mycelia_polls"
+POLL_VOTE_TABLE = "mycelia_poll_votes"
+TIME_CAPSULE_TABLE = "mycelia_time_capsules"
 SNAPSHOT_MAGIC = b"MYCELIA_SNAPSHOT_V1\0"
 DEFAULT_SNAPSHOT_PATH = Path(
     os.environ.get("MYCELIA_SNAPSHOT_PATH", str(ROOT / "snapshots" / "autosave.mycelia"))
@@ -168,6 +173,9 @@ DIRECT_INGEST_AUTH_REQUIRED_OPS = {
     "e2ee_send_message",
     "e2ee_delete_message",
     "webauthn_register_credential",
+    "create_poll",
+    "vote_poll",
+    "create_time_capsule",
 }
 SESSION_BOUND_READ_OPS = {
     "get_profile",
@@ -202,6 +210,10 @@ SESSION_BOUND_READ_OPS = {
     "telemetry_snapshot",
     "security_evolution_status",
     "webauthn_challenge_begin",
+    "enterprise_plugin_dashboard",
+    "fun_plugin_dashboard",
+    "list_polls",
+    "list_time_capsules",
 }
 
 RESIDENCY_AUDIT_VERSION = "VRAM_RESIDENCY_AUDIT_V11_GPU_RESIDENT_OPEN_RESTORE"
@@ -1639,6 +1651,7 @@ class MyceliaPlatform:
                     "signature": data.get("signature") or data.get("blog_signature") or "",
                     "title": data.get("title", ""),
                     "description": data.get("description", ""),
+                    "blog_theme": data.get("blog_theme", ""),
                     **media_fields,
                 }
             case "delete_blog":
@@ -1647,6 +1660,7 @@ class MyceliaPlatform:
                 return {
                     "title": data.get("title", ""),
                     "description": data.get("description", ""),
+                    "blog_theme": data.get("blog_theme", ""),
                     **media_fields,
                 }
             case "create_blog_post":
@@ -1713,6 +1727,24 @@ class MyceliaPlatform:
                     "signature": data.get("signature", "") or data.get("message_signature", ""),
                     "mailbox": data.get("mailbox", "inbox"),
                 }
+            case "create_poll":
+                options = []
+                for idx in range(1, 7):
+                    val = str(data.get(f"option_{idx}", "")).strip()
+                    if val:
+                        options.append(val)
+                if not options:
+                    try:
+                        loaded = json.loads(str(data.get("options_json", "[]")))
+                        if isinstance(loaded, list):
+                            options = [str(v).strip() for v in loaded if str(v).strip()]
+                    except Exception:
+                        options = []
+                return {"question": data.get("question", ""), "options": options, "target_signature": data.get("target_signature", "")}
+            case "vote_poll":
+                return {"poll_signature": data.get("poll_signature", ""), "option_id": data.get("option_id", "")}
+            case "create_time_capsule":
+                return {"title": data.get("title", ""), "body": data.get("body", ""), "reveal_at": data.get("reveal_at", ""), "visibility": data.get("visibility", "private")}
             case "vram_residency_audit":
                 probes_raw = str(data.get("probes", ""))
                 probes = [p.strip() for p in re.split(r"[\r\n,]+", probes_raw) if p.strip()]
@@ -2274,10 +2306,41 @@ class MyceliaPlatform:
             return True
         return str(row.get("author_signature") or row.get("owner_signature") or "") == str(actor_signature)
 
-    def _reaction_counts(self, target_signature: str) -> dict[str, int]:
-        likes = self.core.query_sql_like(table=REACTION_TABLE, filters={"target_signature": target_signature, "reaction": "like"}, limit=None)
-        dislikes = self.core.query_sql_like(table=REACTION_TABLE, filters={"target_signature": target_signature, "reaction": "dislike"}, limit=None)
-        return {"likes": len(likes), "dislikes": len(dislikes)}
+    def _allowed_reactions(self) -> set[str]:
+        # v1.21.18 Reaction Stickers: expressive but allowlisted metadata only.
+        return {"like", "dislike", "insightful", "funny", "thanks", "fire", "thinking", "heart"}
+
+    def _allowed_blog_themes(self) -> dict[str, dict[str, str]]:
+        # v1.21.20 Blog Mood Themes: all values are allowlisted metadata.
+        return {
+            "security": {"label": "Security", "emoji": "🛡️"},
+            "research": {"label": "Forschung", "emoji": "🧪"},
+            "gaming": {"label": "Gaming", "emoji": "🎮"},
+            "nature": {"label": "Natur", "emoji": "🌿"},
+            "creative": {"label": "Kreativ", "emoji": "🎨"},
+            "scifi": {"label": "Sci-Fi", "emoji": "🌌"},
+        }
+
+    def _normalize_blog_theme(self, value: Any) -> str:
+        theme = str(value or "").strip().lower()
+        return theme if theme in self._allowed_blog_themes() else ""
+
+    def _blog_theme_descriptor(self, value: Any) -> dict[str, str]:
+        theme = self._normalize_blog_theme(value)
+        if not theme:
+            return {"id": "", "label": "", "emoji": ""}
+        meta = self._allowed_blog_themes()[theme]
+        return {"id": theme, "label": meta["label"], "emoji": meta["emoji"]}
+
+    def _reaction_counts(self, target_signature: str) -> dict[str, Any]:
+        breakdown: dict[str, int] = {}
+        for reaction in sorted(self._allowed_reactions()):
+            hits = self.core.query_sql_like(table=REACTION_TABLE, filters={"target_signature": target_signature, "reaction": reaction}, limit=None)
+            if hits:
+                breakdown[reaction] = len(hits)
+        likes = int(breakdown.get("like", 0))
+        dislikes = int(breakdown.get("dislike", 0))
+        return {"likes": likes, "dislikes": dislikes, "reaction_breakdown": breakdown}
 
     def create_forum_thread(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         if (err := self._require_permission(payload, "forum.create")):
@@ -2498,8 +2561,11 @@ class MyceliaPlatform:
         target_signature = str(payload.get("target_signature", "")).strip()
         target_type = str(payload.get("target_type", "content")).strip()
         reaction = str(payload.get("reaction", "")).strip().lower()
-        if reaction not in {"like", "dislike"}:
-            return {"status": "error", "message": "reaction muss like oder dislike sein."}
+        core_reactions = {"like", "dislike"}
+        if reaction not in self._allowed_reactions():
+            return {"status": "error", "message": "reaction muss eine erlaubte Reaction-Sticker-ID sein.", "allowed": sorted(self._allowed_reactions())}
+        if reaction not in core_reactions and not self._is_plugin_enabled("reaction_stickers"):
+            return {"status": "error", "message": "Reaction Stickers Plugin ist nicht aktiviert.", "plugin_id": "reaction_stickers", "plugin_required": True}
         existing = self.core.query_sql_like(table=REACTION_TABLE, filters={"target_signature": target_signature, "actor_signature": actor}, limit=1)
         now = self._now()
         if existing:
@@ -2529,6 +2595,9 @@ class MyceliaPlatform:
         owner_signature, owner_username = self._public_author({"author_signature": payload.get("owner_signature") or payload.get("author_signature"), "author_username": payload.get("owner_username") or payload.get("author_username")})
         title = str(payload.get("title", "")).strip()
         description = str(payload.get("description", "")).strip()
+        blog_theme = self._normalize_blog_theme(payload.get("blog_theme", ""))
+        if blog_theme and not self._is_plugin_enabled("blog_mood_themes"):
+            return {"status": "error", "message": "Blog Mood Themes Plugin ist nicht aktiviert.", "plugin_id": "blog_mood_themes", "plugin_required": True}
         if not title:
             return {"status": "error", "message": "Blog-Titel ist erforderlich."}
         now = self._now()
@@ -2536,6 +2605,9 @@ class MyceliaPlatform:
             "node_type": "blog",
             "title": title[:240],
             "description": description[:1000],
+            "blog_theme": blog_theme,
+            "blog_theme_label": self._blog_theme_descriptor(blog_theme).get("label", ""),
+            "blog_theme_emoji": self._blog_theme_descriptor(blog_theme).get("emoji", ""),
             "owner_signature": owner_signature,
             "owner_username": owner_username,
             "created_at": now,
@@ -2570,6 +2642,10 @@ class MyceliaPlatform:
                 "signature": record["signature"],
                 "title": row.get("title"),
                 "description": row.get("description"),
+                "blog_theme": row.get("blog_theme", ""),
+                "blog_theme_label": row.get("blog_theme_label", ""),
+                "blog_theme_emoji": row.get("blog_theme_emoji", ""),
+                "blog_theme_descriptor": self._blog_theme_descriptor(row.get("blog_theme", "")),
                 "owner_signature": row.get("owner_signature"),
                 "owner_username": row.get("owner_username"),
                 "created_at": row.get("created_at"),
@@ -2598,6 +2674,10 @@ class MyceliaPlatform:
                 "signature": signature,
                 "title": row.get("title"),
                 "description": row.get("description"),
+                "blog_theme": row.get("blog_theme", ""),
+                "blog_theme_label": row.get("blog_theme_label", ""),
+                "blog_theme_emoji": row.get("blog_theme_emoji", ""),
+                "blog_theme_descriptor": self._blog_theme_descriptor(row.get("blog_theme", "")),
                 "owner_signature": row.get("owner_signature"),
                 "owner_username": row.get("owner_username"),
                 "created_at": row.get("created_at"),
@@ -2617,11 +2697,22 @@ class MyceliaPlatform:
         actor_role = str(payload.get("actor_role", "")).strip()
         title = str(payload.get("title", "")).strip()
         description = str(payload.get("description", "")).strip()
+        blog_theme = self._normalize_blog_theme(payload.get("blog_theme", ""))
+        if blog_theme and not self._is_plugin_enabled("blog_mood_themes"):
+            return {"status": "error", "message": "Blog Mood Themes Plugin ist nicht aktiviert.", "plugin_id": "blog_mood_themes", "plugin_required": True}
         try:
             _, row = self._get_record_or_error(signature, BLOG_TABLE)
             if not self._owner_matches(row, actor, allow_admin=True, actor_role=actor_role):
                 return {"status": "error", "message": "Keine Berechtigung."}
-            row.update({"title": title[:240], "description": description[:1000], "updated_at": self._now()})
+            theme_desc = self._blog_theme_descriptor(blog_theme)
+            row.update({
+                "title": title[:240],
+                "description": description[:1000],
+                "blog_theme": blog_theme,
+                "blog_theme_label": theme_desc.get("label", ""),
+                "blog_theme_emoji": theme_desc.get("emoji", ""),
+                "updated_at": self._now(),
+            })
             ok = self.core.update_sql_record(signature, row, stability=0.97)
             media_signatures = self._store_media_from_payload(payload, target_signature=signature, target_type="blog") if ok else []
             save = self.autosave_snapshot("update_blog") if ok else {"status": "skipped"}
@@ -3036,6 +3127,729 @@ class MyceliaPlatform:
         media.sort(key=lambda x: float(x.get("created_at") or 0), reverse=True)
         return {"status": "ok", "media": media, "count": len(media)}
 
+
+    def _enterprise_plugin_manifests(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "plugin_id": "mycelia_digest",
+                "name": "Mycelia Digest",
+                "version": "1.0.0",
+                "description": "Persönliche Aktivitätsübersicht mit E2EE-Metadaten, Antworten, Reaktionen und neuen öffentlichen Inhalten.",
+                "author": "Mycelia Enterprise",
+                "hooks": ["profile.digest", "admin.dashboard"],
+                "capabilities": ["digest.own.activity", "digest.own.e2ee.count", "digest.public.recent"],
+                "constraints": {"max_records": 250, "tension_threshold": 0.72},
+                "outputs": [{"key": "digest", "type": "profile_cards"}],
+            },
+            {
+                "plugin_id": "privacy_guardian",
+                "name": "Privacy Guardian",
+                "version": "1.0.0",
+                "description": "Daten-Souveränitäts-Assistent für eigene Inhalte, Medien, E2EE-Keys, Export- und Löschhinweise.",
+                "author": "Mycelia Enterprise",
+                "hooks": ["profile.privacy", "admin.dashboard"],
+                "capabilities": ["privacy.own.inventory", "privacy.own.media", "privacy.own.e2ee_keys", "privacy.own.export_status"],
+                "constraints": {"max_records": 500, "tension_threshold": 0.72},
+                "outputs": [{"key": "privacy", "type": "privacy_cards"}],
+            },
+            {
+                "plugin_id": "content_trust_lens",
+                "name": "Content Trust & Safety Lens",
+                "version": "1.0.0",
+                "description": "Bewertet öffentliche Inhalte anhand aggregierter Reaktionen, Kommentar-Dynamik und Moderationsstatus ohne private Rohdaten.",
+                "author": "Mycelia Enterprise",
+                "hooks": ["content.trust.badge", "blog.sidebar", "forum.sidebar"],
+                "capabilities": ["trust.public.content", "trust.public.reactions", "trust.public.comments", "trust.public.moderation"],
+                "constraints": {"max_records": 1000, "tension_threshold": 0.72},
+                "outputs": [{"key": "trust", "type": "trust_badges"}],
+            },
+
+            {
+                "plugin_id": "mycelia_achievements",
+                "name": "Mycelia Achievements",
+                "version": "1.0.0",
+                "description": "Badge- und Erfolgssystem für Beiträge, Blogs, Medien, Kommentare, E2EE und Community-Reaktionen.",
+                "author": "Mycelia Enterprise",
+                "hooks": ["profile.fun", "profile.badges"],
+                "capabilities": ["fun.own.achievements", "stats.own.content", "stats.own.media", "stats.own.e2ee_keys"],
+                "constraints": {"max_records": 500, "tension_threshold": 0.72},
+                "outputs": [{"key": "badges", "type": "badge_grid"}],
+            },
+            {
+                "plugin_id": "daily_pulse",
+                "name": "Daily Pulse",
+                "version": "1.0.0",
+                "description": "Tägliche Community-Pulsanzeige mit Hot Items, Aktivität und Stimmung aus Aggregaten.",
+                "author": "Mycelia Enterprise",
+                "hooks": ["home.pulse", "profile.fun"],
+                "capabilities": ["fun.public.daily_pulse", "stats.public.activity"],
+                "constraints": {"max_records": 500, "tension_threshold": 0.72},
+                "outputs": [{"key": "pulse", "type": "pulse_cards"}],
+            },
+            {
+                "plugin_id": "mycelia_quests",
+                "name": "Mycelia Quests",
+                "version": "1.0.0",
+                "description": "Freiwillige Onboarding-Quests, die User spielerisch durch sichere Plattformfunktionen führen.",
+                "author": "Mycelia Enterprise",
+                "hooks": ["profile.fun", "profile.quests"],
+                "capabilities": ["fun.own.quests", "stats.own.content"],
+                "constraints": {"max_records": 100, "tension_threshold": 0.72},
+                "outputs": [{"key": "quests", "type": "quest_cards"}],
+            },
+            {
+                "plugin_id": "reaction_stickers",
+                "name": "Reaction Stickers",
+                "version": "1.0.0",
+                "description": "Mehr Ausdruck als Like/Dislike: erlaubte Sticker-Reaktionen mit aggregierten Zählern.",
+                "author": "Mycelia Enterprise",
+                "hooks": ["content.reactions", "profile.fun"],
+                "capabilities": ["fun.public.reaction_stickers", "stats.public.reactions"],
+                "constraints": {"max_records": 1000, "tension_threshold": 0.72},
+                "outputs": [{"key": "stickers", "type": "reaction_palette"}],
+            },
+            {
+                "plugin_id": "blog_mood_themes",
+                "name": "Blog Mood Themes",
+                "version": "1.0.0",
+                "description": "Allowlist-basierte Blog-Stimmungen und Themes ohne freies CSS/HTML.",
+                "author": "Mycelia Enterprise",
+                "hooks": ["blog.theme", "profile.fun"],
+                "capabilities": ["fun.public.blog_themes", "stats.public.blog.count"],
+                "constraints": {"max_records": 500, "tension_threshold": 0.72},
+                "outputs": [{"key": "themes", "type": "theme_chips"}],
+            },
+            {
+                "plugin_id": "community_constellation",
+                "name": "Community Constellation",
+                "version": "1.0.0",
+                "description": "Aggregierte Myzel-Karte über Blogs, Forum, Medien, Kommentare und Reaktionen.",
+                "author": "Mycelia Enterprise",
+                "hooks": ["dashboard.constellation", "profile.fun"],
+                "capabilities": ["fun.public.constellation", "stats.public.activity"],
+                "constraints": {"max_records": 1000, "tension_threshold": 0.72},
+                "outputs": [{"key": "constellation", "type": "safe_graph"}],
+            },
+            {
+                "plugin_id": "random_discovery",
+                "name": "Sporenflug Discovery",
+                "version": "1.0.0",
+                "description": "Zufällige, sichere Content-Entdeckung mit Trust-Signalen und ohne private Daten.",
+                "author": "Mycelia Enterprise",
+                "hooks": ["content.discovery", "profile.fun"],
+                "capabilities": ["fun.public.discovery", "trust.public.content"],
+                "constraints": {"max_records": 250, "tension_threshold": 0.72},
+                "outputs": [{"key": "items", "type": "discovery_cards"}],
+            },
+            {
+                "plugin_id": "creator_cards",
+                "name": "Creator Cards",
+                "version": "1.0.0",
+                "description": "Öffentliche Creator-Karten aus freiwilligen/öffentlichen Aggregaten und Badges.",
+                "author": "Mycelia Enterprise",
+                "hooks": ["profile.creator", "profile.fun"],
+                "capabilities": ["fun.public.creator_cards", "stats.public.user_activity"],
+                "constraints": {"max_records": 500, "tension_threshold": 0.72},
+                "outputs": [{"key": "cards", "type": "creator_cards"}],
+            },
+            {
+                "plugin_id": "polls",
+                "name": "Polls",
+                "version": "1.0.0",
+                "description": "Sichere Community-Abstimmungen mit einer Stimme pro User-Signatur.",
+                "author": "Mycelia Enterprise",
+                "hooks": ["content.polls", "profile.fun"],
+                "capabilities": ["fun.public.polls", "stats.public.poll_votes"],
+                "constraints": {"max_records": 500, "tension_threshold": 0.72},
+                "outputs": [{"key": "polls", "type": "poll_cards"}],
+            },
+            {
+                "plugin_id": "time_capsules",
+                "name": "Time Capsules",
+                "version": "1.0.0",
+                "description": "Beiträge, die reifen: private oder öffentliche Zeitkapseln mit Reveal-Zeitpunkt.",
+                "author": "Mycelia Enterprise",
+                "hooks": ["profile.time_capsules", "profile.fun"],
+                "capabilities": ["fun.own.time_capsules", "privacy.own.inventory"],
+                "constraints": {"max_records": 250, "tension_threshold": 0.72},
+                "outputs": [{"key": "capsules", "type": "time_capsule_cards"}],
+            },
+        ]
+
+    def _row_not_deleted(self, rec: Mapping[str, Any]) -> bool:
+        return not bool(dict(rec.get("data", {})).get("deleted"))
+
+    def _owned_records(self, table: str, owner: str, *owner_fields: str) -> list[dict[str, Any]]:
+        if not owner:
+            return []
+        out: list[dict[str, Any]] = []
+        for rec in self._all_records(table):
+            row = dict(rec.get("data", {}))
+            if row.get("deleted"):
+                continue
+            if any(str(row.get(field, "")) == owner for field in owner_fields):
+                out.append(rec)
+        return out
+
+    def _plugin_mycelia_digest(self, actor_signature: str) -> dict[str, Any]:
+        if not actor_signature:
+            return {"plugin_id": "mycelia_digest", "status": "needs_session", "summary": {}, "notifications": []}
+        own_threads = self._owned_records(FORUM_TABLE, actor_signature, "author_signature")
+        own_blogs = self._owned_records(BLOG_TABLE, actor_signature, "owner_signature")
+        own_posts = self._owned_records(BLOG_POST_TABLE, actor_signature, "author_signature", "owner_signature")
+        own_comments = self._owned_records(COMMENT_TABLE, actor_signature, "author_signature")
+        own_targets = {str(r.get("signature")) for r in [*own_threads, *own_blogs, *own_posts, *own_comments] if r.get("signature")}
+        reactions_on_own = [
+            r for r in self._all_records(REACTION_TABLE)
+            if str(r.get("data", {}).get("target_signature", "")) in own_targets
+            and str(r.get("data", {}).get("actor_signature", "")) != actor_signature
+        ]
+        comments_on_own = [
+            r for r in self._all_records(COMMENT_TABLE)
+            if not r.get("data", {}).get("deleted")
+            and str(r.get("data", {}).get("target_signature", "")) in own_targets
+            and str(r.get("data", {}).get("author_signature", "")) != actor_signature
+        ]
+        inbox = [
+            r for r in self._all_records(E2EE_MESSAGE_TABLE)
+            if str(r.get("data", {}).get("recipient_signature", "")) == actor_signature
+            and not r.get("data", {}).get("deleted")
+            and not r.get("data", {}).get("deleted_for_recipient")
+        ]
+        outbox = [
+            r for r in self._all_records(E2EE_MESSAGE_TABLE)
+            if str(r.get("data", {}).get("sender_signature", "")) == actor_signature
+            and not r.get("data", {}).get("deleted")
+            and not r.get("data", {}).get("deleted_for_sender")
+        ]
+        recent_blogs = []
+        for rec in sorted([r for r in self._all_records(BLOG_TABLE) if self._row_not_deleted(r)], key=lambda x: float(x.get("data", {}).get("updated_at") or 0), reverse=True)[:5]:
+            row = dict(rec.get("data", {}))
+            recent_blogs.append({
+                "type": "blog",
+                "signature": rec.get("signature"),
+                "title": row.get("title", ""),
+                "owner_username": row.get("owner_username", ""),
+                "is_own": str(row.get("owner_signature", "")) == actor_signature,
+                "updated_at": row.get("updated_at"),
+            })
+        notifications = []
+        if comments_on_own:
+            notifications.append({"type": "comments", "label": "Neue Kommentare auf deine Inhalte", "count": len(comments_on_own)})
+        if reactions_on_own:
+            notifications.append({"type": "reactions", "label": "Neue Reaktionen auf deine Inhalte", "count": len(reactions_on_own)})
+        if inbox:
+            notifications.append({"type": "e2ee", "label": "Verschlüsselte Nachrichten in deiner Inbox", "count": len(inbox)})
+        return {
+            "plugin_id": "mycelia_digest",
+            "status": "ok",
+            "engine_blind_e2ee": True,
+            "raw_records_returned": 0,
+            "unread_e2ee_count": len(inbox),
+            "outbox_count": len(outbox),
+            "summary": {
+                "own_threads": len(own_threads),
+                "own_blogs": len(own_blogs),
+                "own_blog_posts": len(own_posts),
+                "own_comments": len(own_comments),
+                "comments_on_own_content": len(comments_on_own),
+                "reactions_on_own_content": len(reactions_on_own),
+            },
+            "notifications": notifications,
+            "recent_public": recent_blogs,
+        }
+
+    def _plugin_privacy_guardian(self, actor_signature: str) -> dict[str, Any]:
+        if not actor_signature:
+            return {"plugin_id": "privacy_guardian", "status": "needs_session", "inventory": {}}
+        own_threads = self._owned_records(FORUM_TABLE, actor_signature, "author_signature")
+        own_blogs = self._owned_records(BLOG_TABLE, actor_signature, "owner_signature")
+        own_posts = self._owned_records(BLOG_POST_TABLE, actor_signature, "author_signature", "owner_signature")
+        own_comments = self._owned_records(COMMENT_TABLE, actor_signature, "author_signature")
+        own_media = self._owned_records(MEDIA_TABLE, actor_signature, "owner_signature", "author_signature")
+        e2ee_keys = self._owned_records(E2EE_KEY_TABLE, actor_signature, "owner_signature")
+        latest_key_age_days = None
+        if e2ee_keys:
+            latest = max(float(r.get("data", {}).get("created_at") or 0) for r in e2ee_keys)
+            latest_key_age_days = max(0.0, (time.time() - latest) / 86400.0)
+        ephemeral = []
+        for table in (FORUM_TABLE, BLOG_TABLE, BLOG_POST_TABLE, COMMENT_TABLE, MEDIA_TABLE):
+            for rec in self._owned_records(table, actor_signature, "author_signature", "owner_signature"):
+                row = dict(rec.get("data", {}))
+                if row.get("ttl_steps") or row.get("decay_rate") or row.get("expires_at"):
+                    ephemeral.append(rec)
+        inventory = {
+            "forum_threads": len(own_threads),
+            "blogs": len(own_blogs),
+            "blog_posts": len(own_posts),
+            "comments": len(own_comments),
+            "media": len(own_media),
+            "e2ee_public_keys": len(e2ee_keys),
+            "ephemeral_items": len(ephemeral),
+        }
+        return {
+            "plugin_id": "privacy_guardian",
+            "status": "ok",
+            "raw_records_returned": 0,
+            "inventory": inventory,
+            "public_content_count": len(own_threads) + len(own_blogs) + len(own_posts) + len(own_comments),
+            "media_count": len(own_media),
+            "e2ee_keys": {
+                "count": len(e2ee_keys),
+                "latest_key_age_days": round(latest_key_age_days, 1) if latest_key_age_days is not None else None,
+                "rotation_recommended": bool(latest_key_age_days is not None and latest_key_age_days > 90),
+            },
+            "actions": {
+                "export_available": True,
+                "delete_account_available": True,
+                "privacy_center": "privacy.php",
+                "key_rotation_hint": "E2EE-Schlüssel regelmäßig erneuern, falls Geräte geteilt oder gewechselt wurden.",
+            },
+            "recommendations": [
+                "Prüfe alte öffentliche Kommentare regelmäßig.",
+                "Nutze DSGVO-Export vor größeren Löschaktionen.",
+                "E2EE-Nachrichten bleiben für Engine/PHP blind; sichtbar sind nur Metadaten.",
+            ],
+        }
+
+    def _trust_score_for_target(self, signature: str, row: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        counts = self._reaction_counts(signature)
+        comments = [r for r in self._all_records(COMMENT_TABLE) if not r.get("data", {}).get("deleted") and str(r.get("data", {}).get("target_signature", "")) == signature]
+        likes = int(counts.get("likes", 0) or 0)
+        dislikes = int(counts.get("dislikes", 0) or 0)
+        total_reactions = max(1, likes + dislikes)
+        sentiment = (likes - dislikes) / total_reactions
+        comment_pressure = min(1.0, len(comments) / 20.0)
+        moderation_penalty = 0.25 if row and str(row.get("moderation_status", "visible")) not in {"", "visible"} else 0.0
+        score = max(0.0, min(1.0, 0.72 + 0.20 * sentiment - 0.10 * comment_pressure - moderation_penalty))
+        flags: list[str] = []
+        if dislikes > likes and dislikes >= 3:
+            flags.append("negative_reaction_skew")
+        if len(comments) >= 20:
+            flags.append("heated_discussion")
+        if moderation_penalty:
+            flags.append("moderation_attention")
+        return {
+            "target_signature": signature,
+            "trust_score": round(score, 3),
+            "label": "hoch" if score >= 0.75 else ("mittel" if score >= 0.55 else "prüfen"),
+            "likes": likes,
+            "dislikes": dislikes,
+            "comments": len(comments),
+            "flags": flags,
+            "raw_content_returned": False,
+        }
+
+    def _plugin_content_trust_lens(self, actor_signature: str = "", target_signature: str = "") -> dict[str, Any]:
+        del actor_signature
+        targets: list[tuple[str, dict[str, Any]]] = []
+        if target_signature:
+            for table in (FORUM_TABLE, BLOG_TABLE, BLOG_POST_TABLE):
+                found = self.core.query_sql_like(table=table, filters={}, limit=None)
+                for rec in found:
+                    if str(rec.get("signature")) == target_signature and not rec.get("data", {}).get("deleted"):
+                        targets.append((str(rec.get("signature")), dict(rec.get("data", {}))))
+                        break
+        else:
+            for table in (FORUM_TABLE, BLOG_TABLE, BLOG_POST_TABLE):
+                for rec in self._all_records(table):
+                    if not rec.get("data", {}).get("deleted"):
+                        targets.append((str(rec.get("signature")), dict(rec.get("data", {}))))
+        cards = [self._trust_score_for_target(sig, row) for sig, row in targets]
+        heated = sum(1 for c in cards if "heated_discussion" in c.get("flags", []))
+        negative = sum(1 for c in cards if "negative_reaction_skew" in c.get("flags", []))
+        avg = round(sum(float(c["trust_score"]) for c in cards) / len(cards), 3) if cards else 1.0
+        return {
+            "plugin_id": "content_trust_lens",
+            "status": "ok",
+            "raw_records_returned": 0,
+            "summary": {"targets_scored": len(cards), "average_trust": avg, "attention_needed": heated + negative},
+            "reaction_signals": {"negative_skew_targets": negative},
+            "discussion_signals": {"heated_targets": heated},
+            "moderation": {"hidden_or_flagged_targets": sum(1 for c in cards if "moderation_attention" in c.get("flags", []))},
+            "cards": sorted(cards, key=lambda c: float(c.get("trust_score", 1.0)))[:10],
+        }
+
+    def enterprise_plugin_dashboard(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        actor = str(payload.get("actor_signature", "")).strip()
+        if not actor:
+            return {"status": "error", "message": "Engine-Session erforderlich."}
+        target = str(payload.get("target_signature", "")).strip()
+        enabled = self._enabled_plugin_ids()
+        available = {
+            "mycelia_digest": lambda: self._plugin_mycelia_digest(actor),
+            "privacy_guardian": lambda: self._plugin_privacy_guardian(actor),
+            "content_trust_lens": lambda: self._plugin_content_trust_lens(actor, target),
+        }
+        active_plugins: dict[str, Any] = {}
+        for plugin_id, factory in available.items():
+            if plugin_id in enabled:
+                active_plugins[plugin_id] = factory()
+        return {
+            "status": "ok",
+            "execution_model": "built-in-enterprise-plugin-sandbox",
+            "code_execution": False,
+            "io_access": False,
+            "network_access": False,
+            "raw_records_returned": 0,
+            "plugins": active_plugins,
+            "enabled_plugin_ids": sorted(enabled),
+            "available_plugin_ids": sorted(available.keys()),
+            "activation_policy": "installed_and_enabled_only",
+            "message": "Enterprise plugin features are inert until their manifest is installed and enabled by an admin.",
+        }
+
+
+    def _public_content_records(self) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for table, kind in ((FORUM_TABLE, "forum_thread"), (BLOG_TABLE, "blog"), (BLOG_POST_TABLE, "blog_post")):
+            for rec in self._all_records(table):
+                row = dict(rec.get("data", {}))
+                if row.get("deleted"):
+                    continue
+                row["_table"] = table
+                row["_kind"] = kind
+                row["_signature"] = str(rec.get("signature", ""))
+                records.append({"signature": rec.get("signature"), "data": row, "stability": rec.get("stability")})
+        return records
+
+    def _plugin_achievements(self, actor_signature: str) -> dict[str, Any]:
+        if not actor_signature:
+            return {"plugin_id": "mycelia_achievements", "status": "needs_session", "badges": []}
+        own_threads = self._owned_records(FORUM_TABLE, actor_signature, "author_signature")
+        own_blogs = self._owned_records(BLOG_TABLE, actor_signature, "owner_signature")
+        own_posts = self._owned_records(BLOG_POST_TABLE, actor_signature, "author_signature", "owner_signature")
+        own_comments = self._owned_records(COMMENT_TABLE, actor_signature, "author_signature")
+        own_media = self._owned_records(MEDIA_TABLE, actor_signature, "owner_signature", "author_signature")
+        own_keys = self._owned_records(E2EE_KEY_TABLE, actor_signature, "owner_signature")
+        own_targets = {str(r.get("signature")) for r in [*own_threads, *own_blogs, *own_posts] if r.get("signature")}
+        reactions = [r for r in self._all_records(REACTION_TABLE) if str(r.get("data", {}).get("target_signature", "")) in own_targets]
+        badge_specs = [
+            ("first_post", "🌱 Erster Beitrag", len(own_threads) >= 1),
+            ("first_blog", "🧬 Erster Blog", len(own_blogs) >= 1),
+            ("commenter_10", "💬 10 Kommentare", len(own_comments) >= 10),
+            ("media_seed", "🎥 Erstes Medium", len(own_media) >= 1),
+            ("e2ee_ready", "🔐 E2EE-Key aktiv", len(own_keys) >= 1),
+            ("community_fire", "🔥 10 Reaktionen erhalten", len(reactions) >= 10),
+        ]
+        badges = [{"badge_id": bid, "label": label, "earned": bool(ok)} for bid, label, ok in badge_specs]
+        return {"plugin_id": "mycelia_achievements", "status": "ok", "raw_records_returned": 0, "earned_count": sum(1 for b in badges if b["earned"]), "badges": badges}
+
+    def _plugin_daily_pulse(self) -> dict[str, Any]:
+        now = time.time()
+        since = now - 86400
+        public = self._public_content_records()
+        recent_public = [r for r in public if float(r.get("data", {}).get("created_at") or 0) >= since]
+        comments_today = [r for r in self._all_records(COMMENT_TABLE) if not r.get("data", {}).get("deleted") and float(r.get("data", {}).get("created_at") or 0) >= since]
+        reactions_today = [r for r in self._all_records(REACTION_TABLE) if float(r.get("data", {}).get("created_at") or 0) >= since]
+        hot = sorted(public, key=lambda r: (len([x for x in self._all_records(COMMENT_TABLE) if str(x.get("data", {}).get("target_signature", "")) == str(r.get("signature"))]) + len([x for x in self._all_records(REACTION_TABLE) if str(x.get("data", {}).get("target_signature", "")) == str(r.get("signature"))])), reverse=True)[:3]
+        mood = "ruhig"
+        if len(comments_today) + len(reactions_today) > 30:
+            mood = "lebendig"
+        if len(comments_today) > 40:
+            mood = "hitzig"
+        return {
+            "plugin_id": "daily_pulse",
+            "status": "ok",
+            "raw_records_returned": 0,
+            "summary": {"new_public_content": len(recent_public), "comments_today": len(comments_today), "reactions_today": len(reactions_today), "community_mood": mood},
+            "hot_items": [{"signature": h.get("signature"), "kind": h.get("data", {}).get("_kind"), "title": h.get("data", {}).get("title", "")} for h in hot],
+        }
+
+    def _plugin_quests(self, actor_signature: str) -> dict[str, Any]:
+        digest = self._plugin_mycelia_digest(actor_signature)
+        privacy = self._plugin_privacy_guardian(actor_signature)
+        summary = dict(digest.get("summary", {}))
+        inventory = dict(privacy.get("inventory", {}))
+        quests = [
+            {"quest_id": "write_comment", "label": "Schreibe einen hilfreichen Kommentar", "complete": int(summary.get("own_comments", 0)) > 0},
+            {"quest_id": "create_blog", "label": "Erstelle deinen ersten Blog", "complete": int(inventory.get("blogs", 0)) > 0},
+            {"quest_id": "upload_media", "label": "Teile ein Bild oder Video", "complete": int(inventory.get("media", 0)) > 0},
+            {"quest_id": "enable_e2ee", "label": "Aktiviere E2EE-Nachrichten", "complete": int(inventory.get("e2ee_public_keys", 0)) > 0},
+            {"quest_id": "discover", "label": "Entdecke einen öffentlichen Beitrag", "complete": False},
+        ]
+        return {"plugin_id": "mycelia_quests", "status": "ok", "raw_records_returned": 0, "active_quests": quests, "open_count": sum(1 for q in quests if not q["complete"])}
+
+    def _plugin_reaction_stickers(self) -> dict[str, Any]:
+        labels = {"like": "👍 Like", "dislike": "👎 Dislike", "insightful": "💡 Interessant", "funny": "😂 Lustig", "thanks": "❤️ Danke", "fire": "🔥 Stark", "thinking": "🤔 Nachdenklich", "heart": "💚 Herz"}
+        totals = {rid: 0 for rid in self._allowed_reactions()}
+        for rec in self._all_records(REACTION_TABLE):
+            reaction = str(rec.get("data", {}).get("reaction", ""))
+            if reaction in totals:
+                totals[reaction] += 1
+        return {"plugin_id": "reaction_stickers", "status": "ok", "raw_records_returned": 0, "allowed_reactions": [{"id": rid, "label": labels.get(rid, rid), "count": totals.get(rid, 0)} for rid in sorted(totals)]}
+
+    def _plugin_blog_mood_themes(self) -> dict[str, Any]:
+        themes = {
+            "security": "🛡️ Security",
+            "research": "🧪 Forschung",
+            "gaming": "🎮 Gaming",
+            "nature": "🌿 Natur",
+            "creative": "🎨 Kreativ",
+            "scifi": "🌌 Sci-Fi",
+        }
+        counts = {key: 0 for key in themes}
+        for rec in self._all_records(BLOG_TABLE):
+            row = dict(rec.get("data", {}))
+            if row.get("deleted"):
+                continue
+            theme = str(row.get("blog_theme") or row.get("theme") or "").strip().lower()
+            if theme in counts:
+                counts[theme] += 1
+        return {"plugin_id": "blog_mood_themes", "status": "ok", "raw_records_returned": 0, "themes": [{"id": k, "label": v, "count": counts[k]} for k, v in themes.items()]}
+
+    def _plugin_community_constellation(self, actor_signature: str) -> dict[str, Any]:
+        del actor_signature
+        clusters: dict[str, int] = {"forum": 0, "blogs": 0, "media": 0, "comments": 0, "reactions": 0}
+        clusters["forum"] = len([r for r in self._all_records(FORUM_TABLE) if not r.get("data", {}).get("deleted")])
+        clusters["blogs"] = len([r for r in self._all_records(BLOG_TABLE) if not r.get("data", {}).get("deleted")])
+        clusters["media"] = len([r for r in self._all_records(MEDIA_TABLE) if not r.get("data", {}).get("deleted")])
+        clusters["comments"] = len([r for r in self._all_records(COMMENT_TABLE) if not r.get("data", {}).get("deleted")])
+        clusters["reactions"] = len(self._all_records(REACTION_TABLE))
+        nodes = [{"id": k, "label": k.title(), "weight": v} for k, v in clusters.items()]
+        edges = [{"source": "comments", "target": "blogs", "weight": min(clusters["comments"], clusters["blogs"] + 1)}, {"source": "reactions", "target": "forum", "weight": min(clusters["reactions"], clusters["forum"] + 1)}, {"source": "media", "target": "blogs", "weight": min(clusters["media"], clusters["blogs"] + 1)}]
+        return {"plugin_id": "community_constellation", "status": "ok", "raw_records_returned": 0, "nodes": nodes, "edges": edges, "privacy": "aggregated_only"}
+
+    def _plugin_random_discovery(self, actor_signature: str) -> dict[str, Any]:
+        public = [r for r in self._public_content_records() if str(r.get("data", {}).get("author_signature", r.get("data", {}).get("owner_signature", ""))) != actor_signature]
+        scored = []
+        for rec in public:
+            sig = str(rec.get("signature", ""))
+            trust = self._trust_score_for_target(sig, dict(rec.get("data", {})))
+            recency = float(rec.get("data", {}).get("updated_at") or rec.get("data", {}).get("created_at") or 0)
+            score = float(trust.get("trust_score", 0.5)) + min(0.25, max(0.0, (time.time() - recency) / 86400.0) * 0.0)
+            scored.append((score, rec, trust))
+        scored.sort(key=lambda x: hashlib.sha256((str(x[1].get("signature")) + str(int(time.time() // 3600))).encode()).hexdigest())
+        picks = scored[:5]
+        return {"plugin_id": "random_discovery", "status": "ok", "raw_records_returned": 0, "items": [{"signature": r.get("signature"), "kind": r.get("data", {}).get("_kind"), "title": r.get("data", {}).get("title", ""), "trust_label": t.get("label")} for _, r, t in picks]}
+
+    def _plugin_creator_cards(self) -> dict[str, Any]:
+        users = [r for r in self._all_records(USER_TABLE) if not r.get("data", {}).get("deleted")]
+        cards = []
+        for user in users:
+            row = dict(user.get("data", {}))
+            sig = str(user.get("signature", ""))
+            cards.append({
+                "username": row.get("username", "user"),
+                "signature": sig,
+                "blogs": len(self._owned_records(BLOG_TABLE, sig, "owner_signature")),
+                "threads": len(self._owned_records(FORUM_TABLE, sig, "author_signature")),
+                "media": len(self._owned_records(MEDIA_TABLE, sig, "owner_signature", "author_signature")),
+                "badges": self._plugin_achievements(sig).get("earned_count", 0),
+            })
+        cards.sort(key=lambda c: (int(c.get("blogs", 0)) + int(c.get("threads", 0)) + int(c.get("media", 0))), reverse=True)
+        return {"plugin_id": "creator_cards", "status": "ok", "raw_records_returned": 0, "cards": cards[:12]}
+
+    def _plugin_polls(self, actor_signature: str) -> dict[str, Any]:
+        polls = self.list_polls({"actor_signature": actor_signature}).get("polls", [])
+        open_polls = [p for p in polls if not p.get("closed")]
+        return {"plugin_id": "polls", "status": "ok", "raw_records_returned": 0, "poll_count": len(polls), "open_count": len(open_polls), "polls": open_polls[:5]}
+
+    def _plugin_time_capsules(self, actor_signature: str) -> dict[str, Any]:
+        capsules = self.list_time_capsules({"actor_signature": actor_signature}).get("capsules", [])
+        ready = [c for c in capsules if c.get("is_revealed")]
+        waiting = [c for c in capsules if not c.get("is_revealed")]
+        return {"plugin_id": "time_capsules", "status": "ok", "raw_records_returned": 0, "ready_count": len(ready), "waiting_count": len(waiting), "capsules": capsules[:5]}
+
+    def fun_plugin_dashboard(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        actor = str(payload.get("actor_signature", "")).strip()
+        enabled = self._enabled_plugin_ids()
+        available = {
+            "mycelia_achievements": lambda: self._plugin_achievements(actor),
+            "daily_pulse": lambda: self._plugin_daily_pulse(),
+            "mycelia_quests": lambda: self._plugin_quests(actor),
+            "reaction_stickers": lambda: self._plugin_reaction_stickers(),
+            "blog_mood_themes": lambda: self._plugin_blog_mood_themes(),
+            "community_constellation": lambda: self._plugin_community_constellation(actor),
+            "random_discovery": lambda: self._plugin_random_discovery(actor),
+            "creator_cards": lambda: self._plugin_creator_cards(),
+            "polls": lambda: self._plugin_polls(actor),
+            "time_capsules": lambda: self._plugin_time_capsules(actor),
+        }
+        active_plugins: dict[str, Any] = {}
+        for plugin_id, factory in available.items():
+            if plugin_id in enabled:
+                active_plugins[plugin_id] = factory()
+        return {
+            "status": "ok",
+            "execution_model": "built-in-enterprise-plugin-sandbox",
+            "code_execution": False,
+            "raw_records_returned": 0,
+            "plugins": active_plugins,
+            "enabled_plugin_ids": sorted(enabled),
+            "available_plugin_ids": sorted(available.keys()),
+            "activation_policy": "installed_and_enabled_only",
+            "message": "Built-in plugin features are inert until their manifest is installed and enabled by an admin.",
+        }
+
+    def create_poll(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        required = self._require_plugin_enabled("polls", "Polls / Abstimmungen")
+        if required:
+            return required
+        actor = str(payload.get("actor_signature", "")).strip()
+        username = str(payload.get("actor_username", "")).strip() or "anonymous"
+        if not actor:
+            return {"status": "error", "message": "Engine-Session erforderlich."}
+        question = str(payload.get("question", "")).strip()[:300]
+        options_raw = payload.get("options", [])
+        if isinstance(options_raw, str):
+            try:
+                options_raw = json.loads(options_raw)
+            except Exception:
+                options_raw = []
+        options = [str(v).strip()[:140] for v in (options_raw if isinstance(options_raw, list) else []) if str(v).strip()][:6]
+        if not question or len(options) < 2:
+            return {"status": "error", "message": "Umfrage benötigt Frage und mindestens zwei Optionen."}
+        opts = [{"id": hashlib.sha256((question + str(i) + opt).encode()).hexdigest()[:12], "label": opt} for i, opt in enumerate(options)]
+        row = {"node_type": "poll", "question": question, "options": opts, "author_signature": actor, "author_username": username, "target_signature": str(payload.get("target_signature", ""))[:128], "created_at": self._now(), "updated_at": self._now(), "deleted": False, "closed": False}
+        pattern = self.core.database.store_sql_record(POLL_TABLE, row, stability=0.94, mood_vector=(0.72, 0.18, 0.82))
+        save = self.autosave_snapshot("create_poll")
+        return {"status": "ok", "signature": pattern.signature, "autosave": save.get("status")}
+
+    def list_polls(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        required = self._require_plugin_enabled("polls", "Polls / Abstimmungen")
+        if required:
+            return {**required, "polls": [], "count": 0}
+        del payload
+        polls = []
+        votes = self._all_records(POLL_VOTE_TABLE)
+        for rec in self._all_records(POLL_TABLE):
+            row = dict(rec.get("data", {}))
+            if row.get("deleted"):
+                continue
+            sig = str(rec.get("signature", ""))
+            counts: dict[str, int] = {}
+            for v in votes:
+                vrow = dict(v.get("data", {}))
+                if str(vrow.get("poll_signature", "")) == sig and not vrow.get("deleted"):
+                    oid = str(vrow.get("option_id", ""))
+                    counts[oid] = counts.get(oid, 0) + 1
+            options = []
+            for opt in row.get("options", []):
+                if isinstance(opt, Mapping):
+                    oid = str(opt.get("id", ""))
+                    options.append({"id": oid, "label": opt.get("label", ""), "votes": counts.get(oid, 0)})
+            polls.append({"signature": sig, "question": row.get("question", ""), "options": options, "author_username": row.get("author_username", ""), "created_at": row.get("created_at"), "closed": bool(row.get("closed"))})
+        polls.sort(key=lambda p: float(p.get("created_at") or 0), reverse=True)
+        return {"status": "ok", "polls": polls, "count": len(polls)}
+
+    def vote_poll(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        required = self._require_plugin_enabled("polls", "Polls / Abstimmungen")
+        if required:
+            return required
+        actor = str(payload.get("actor_signature", "")).strip()
+        username = str(payload.get("actor_username", "")).strip() or "anonymous"
+        poll_signature = str(payload.get("poll_signature", "")).strip()
+        option_id = str(payload.get("option_id", "")).strip()
+        if not actor or not poll_signature or not option_id:
+            return {"status": "error", "message": "poll_signature, option_id und Session erforderlich."}
+        poll = self.core.query_sql_like(table=POLL_TABLE, filters={}, limit=None)
+        target = None
+        for rec in poll:
+            if str(rec.get("signature")) == poll_signature:
+                target = rec
+                break
+        if not target or target.get("data", {}).get("deleted") or target.get("data", {}).get("closed"):
+            return {"status": "error", "message": "Umfrage nicht verfügbar."}
+        options = target.get("data", {}).get("options", [])
+        if option_id not in {str(o.get("id")) for o in options if isinstance(o, Mapping)}:
+            return {"status": "error", "message": "Ungültige Option."}
+        existing = self.core.query_sql_like(table=POLL_VOTE_TABLE, filters={"poll_signature": poll_signature, "actor_signature": actor}, limit=1)
+        row = {"node_type": "poll_vote", "poll_signature": poll_signature, "option_id": option_id, "actor_signature": actor, "actor_username": username, "updated_at": self._now(), "deleted": False}
+        if existing:
+            old = dict(existing[0].get("data", {})); old.update(row)
+            self.core.update_sql_record(str(existing[0]["signature"]), old, stability=0.91)
+        else:
+            row["created_at"] = self._now()
+            self.core.database.store_sql_record(POLL_VOTE_TABLE, row, stability=0.91, mood_vector=(0.66, 0.22, 0.78))
+        save = self.autosave_snapshot("vote_poll")
+        return {"status": "ok", "poll_signature": poll_signature, "option_id": option_id, "autosave": save.get("status")}
+
+    def create_time_capsule(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        required = self._require_plugin_enabled("time_capsules", "Time Capsules")
+        if required:
+            return required
+        actor = str(payload.get("actor_signature", "")).strip()
+        username = str(payload.get("actor_username", "")).strip() or "anonymous"
+        if not actor:
+            return {"status": "error", "message": "Engine-Session erforderlich."}
+        title = str(payload.get("title", "")).strip()[:180]
+        body = str(payload.get("body", "")).strip()[:2000]
+        reveal_raw = str(payload.get("reveal_at", "")).strip()
+        reveal_ts = self._now() + 86400
+        if reveal_raw:
+            try:
+                reveal_ts = datetime.fromisoformat(reveal_raw.replace("Z", "+00:00")).timestamp()
+            except Exception:
+                try:
+                    reveal_ts = float(reveal_raw)
+                except Exception:
+                    pass
+        if not title or not body:
+            return {"status": "error", "message": "Titel und Inhalt erforderlich."}
+        seed, blob, mode = self._content_packet({"title": title, "body": body}, "time_capsule")
+        row = {"node_type": "time_capsule", "title": title, "author_signature": actor, "author_username": username, "content_seed": seed, "content_blob": blob, "crypto_mode": mode, "visibility": str(payload.get("visibility", "private"))[:32], "reveal_at": reveal_ts, "created_at": self._now(), "deleted": False}
+        pattern = self.core.database.store_sql_record(TIME_CAPSULE_TABLE, row, stability=0.945, mood_vector=(0.76, 0.10, 0.86))
+        save = self.autosave_snapshot("create_time_capsule")
+        return {"status": "ok", "signature": pattern.signature, "reveal_at": reveal_ts, "autosave": save.get("status")}
+
+    def list_time_capsules(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        required = self._require_plugin_enabled("time_capsules", "Time Capsules")
+        if required:
+            return {**required, "capsules": [], "count": 0}
+        actor = str(payload.get("actor_signature", "")).strip()
+        now = self._now()
+        capsules = []
+        for rec in self._all_records(TIME_CAPSULE_TABLE):
+            row = dict(rec.get("data", {}))
+            if row.get("deleted"):
+                continue
+            is_owner = str(row.get("author_signature", "")) == actor
+            public = str(row.get("visibility", "")) == "public"
+            if not (is_owner or public):
+                continue
+            is_revealed = now >= float(row.get("reveal_at") or 0)
+            item = {"signature": rec.get("signature"), "title": row.get("title", ""), "author_username": row.get("author_username", ""), "reveal_at": row.get("reveal_at"), "is_revealed": is_revealed, "visibility": row.get("visibility", "private")}
+            if is_revealed:
+                try:
+                    item["content"] = self.crypto.decrypt(row.get("content_seed", ""), row.get("content_blob", ""))
+                except Exception:
+                    item["content"] = {"body": "[Rekonstruktion fehlgeschlagen]"}
+            capsules.append(item)
+        capsules.sort(key=lambda c: float(c.get("reveal_at") or 0), reverse=True)
+        return {"status": "ok", "capsules": capsules, "count": len(capsules)}
+
+
+    def _enabled_plugin_ids(self) -> set[str]:
+        """Return plugin ids that are explicitly installed and enabled.
+
+        Built-in plugin implementations are inert until an admin installs the
+        corresponding manifest and enables the plugin attractor. This keeps the
+        project-wide plugin sandbox honest: template availability is not the
+        same thing as runtime activation.
+        """
+        enabled: set[str] = set()
+        for rec in self._all_records(PLUGIN_TABLE):
+            row = dict(rec.get("data", {}))
+            if bool(row.get("enabled", False)) and str(row.get("status", "")).lower() == "enabled":
+                pid = str(row.get("plugin_id", "")).strip()
+                if pid:
+                    enabled.add(pid)
+        return enabled
+
+    def _is_plugin_enabled(self, plugin_id: str) -> bool:
+        return str(plugin_id).strip() in self._enabled_plugin_ids()
+
+    def _require_plugin_enabled(self, plugin_id: str, label: str | None = None) -> dict[str, Any] | None:
+        if self._is_plugin_enabled(plugin_id):
+            return None
+        return {
+            "status": "error",
+            "message": f"Plugin nicht aktiviert: {label or plugin_id}. Bitte im Adminbereich installieren und aktivieren.",
+            "plugin_id": plugin_id,
+            "plugin_required": True,
+        }
+
     def plugin_catalog(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         del payload
         capabilities = [
@@ -3046,6 +3860,35 @@ class MyceliaPlatform:
             {"key": "stats.comment.count", "label": "Anzahl Kommentare", "leaks_raw_data": False},
             {"key": "stats.reaction.count", "label": "Anzahl Reaktionen", "leaks_raw_data": False},
             {"key": "stats.content.activity", "label": "Aggregierte Inhaltsaktivität", "leaks_raw_data": False},
+            {"key": "stats.own.content", "label": "Eigene öffentliche Inhaltszähler", "leaks_raw_data": False},
+            {"key": "stats.own.media", "label": "Eigene Medienaggregate", "leaks_raw_data": False},
+            {"key": "stats.own.e2ee_keys", "label": "Eigene E2EE-Key-Aggregate", "leaks_raw_data": False},
+            {"key": "stats.public.reactions", "label": "Öffentliche Reaktionsaggregate", "leaks_raw_data": False},
+            {"key": "stats.public.blog.count", "label": "Öffentliche Blog-Anzahl", "leaks_raw_data": False},
+            {"key": "digest.own.activity", "label": "Persönlicher Mycelia Digest ohne private Klartexte", "leaks_raw_data": False},
+            {"key": "digest.own.e2ee.count", "label": "E2EE-Inbox/Outbox-Zähler ohne Nachrichtentexte", "leaks_raw_data": False},
+            {"key": "digest.public.recent", "label": "Neue öffentliche Inhalte als sichere Hinweise", "leaks_raw_data": False},
+            {"key": "privacy.own.inventory", "label": "Eigene Datenklassen und Zähler", "leaks_raw_data": False},
+            {"key": "privacy.own.media", "label": "Eigene Medien-Zähler", "leaks_raw_data": False},
+            {"key": "privacy.own.e2ee_keys", "label": "Eigener E2EE-Key-Status", "leaks_raw_data": False},
+            {"key": "privacy.own.export_status", "label": "DSGVO-Export-/Löschhinweise", "leaks_raw_data": False},
+            {"key": "trust.public.content", "label": "Öffentliche Content-Trust-Bewertung", "leaks_raw_data": False},
+            {"key": "trust.public.reactions", "label": "Aggregierte Reaktionssignale", "leaks_raw_data": False},
+            {"key": "trust.public.comments", "label": "Aggregierte Kommentar-/Diskussionssignale", "leaks_raw_data": False},
+            {"key": "trust.public.moderation", "label": "Moderations- und Sichtbarkeitsstatus", "leaks_raw_data": False},
+            {"key": "fun.own.achievements", "label": "Eigene Achievements und Badges", "leaks_raw_data": False},
+            {"key": "fun.public.daily_pulse", "label": "Täglicher Community-Puls aus Aggregaten", "leaks_raw_data": False},
+            {"key": "fun.own.quests", "label": "Eigene Onboarding-Quests", "leaks_raw_data": False},
+            {"key": "fun.public.reaction_stickers", "label": "Allowlist-Reaction-Sticker", "leaks_raw_data": False},
+            {"key": "fun.public.blog_themes", "label": "Allowlist Blog Mood Themes", "leaks_raw_data": False},
+            {"key": "fun.public.constellation", "label": "Aggregierte Community-Konstellation", "leaks_raw_data": False},
+            {"key": "fun.public.discovery", "label": "Zufällige Content-Entdeckung", "leaks_raw_data": False},
+            {"key": "fun.public.creator_cards", "label": "Öffentliche Creator Cards", "leaks_raw_data": False},
+            {"key": "fun.public.polls", "label": "Sichere Community-Polls", "leaks_raw_data": False},
+            {"key": "fun.own.time_capsules", "label": "Eigene Time Capsules", "leaks_raw_data": False},
+            {"key": "stats.public.poll_votes", "label": "Aggregierte Poll-Stimmen", "leaks_raw_data": False},
+            {"key": "stats.public.user_activity", "label": "Öffentliche User-Aktivitätsaggregate", "leaks_raw_data": False},
+            {"key": "stats.public.activity", "label": "Öffentliche Aktivitätsaggregate", "leaks_raw_data": False},
             {"key": "media.image.upload", "label": "Bilder als verschlüsselte Media-Attraktoren hochladen", "leaks_raw_data": False},
             {"key": "media.image.attach.forum", "label": "Bilder an Forenbeiträge anhängen", "leaks_raw_data": False},
             {"key": "media.image.attach.blog", "label": "Bilder an Blogposts anhängen", "leaks_raw_data": False},
@@ -3064,6 +3907,20 @@ class MyceliaPlatform:
             {"key": "profile.panel", "label": "Profil Safe-Widget"},
             {"key": "forum.sidebar", "label": "Forum Safe-Widget"},
             {"key": "blog.sidebar", "label": "Blog Safe-Widget"},
+            {"key": "profile.digest", "label": "Profil-Digest"},
+            {"key": "profile.privacy", "label": "Profil-Privacy-Guardian"},
+            {"key": "content.trust.badge", "label": "Content Trust Badge"},
+            {"key": "profile.fun", "label": "Profil Spaß-Plugins"},
+            {"key": "profile.badges", "label": "Profil Badges"},
+            {"key": "profile.quests", "label": "Profil Quests"},
+            {"key": "home.pulse", "label": "Daily Pulse"},
+            {"key": "content.reactions", "label": "Reaction Stickers"},
+            {"key": "blog.theme", "label": "Blog Mood Theme"},
+            {"key": "dashboard.constellation", "label": "Community Constellation"},
+            {"key": "content.discovery", "label": "Sporenflug Discovery"},
+            {"key": "profile.creator", "label": "Creator Cards"},
+            {"key": "content.polls", "label": "Polls"},
+            {"key": "profile.time_capsules", "label": "Time Capsules"},
         ]
         return {
             "status": "ok",
@@ -3084,6 +3941,7 @@ class MyceliaPlatform:
                 "constraints": {"max_records": 10000, "tension_threshold": 0.72},
                 "outputs": [{"key": "summary", "type": "metric_cards"}],
             },
+            "enterprise_plugins": self._enterprise_plugin_manifests(),
         }
 
     def _allowed_plugin_capabilities(self) -> set[str]:
@@ -3330,7 +4188,9 @@ class MyceliaPlatform:
         save = self.autosave_snapshot("admin_delete_plugin")
         return {"status": "ok" if removed else "error", "signature": signature, "deleted": removed, "autosave": save.get("status")}
 
-    def _plugin_aggregate_value(self, capability: str) -> dict[str, Any]:
+    def _plugin_aggregate_value(self, capability: str, payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        payload = payload or {}
+        actor = str(payload.get("actor_signature", "")).strip()
         match capability:
             case "stats.user.count":
                 return {"key": capability, "label": "User", "value": len(self._all_records(USER_TABLE))}
@@ -3353,6 +4213,59 @@ class MyceliaPlatform:
                     len(self._all_records(REACTION_TABLE))
                 )
                 return {"key": capability, "label": "Content-Aktivität", "value": value}
+            case "stats.own.content":
+                value = {
+                    "forum_threads": len(self._owned_records(FORUM_TABLE, actor, "author_signature")),
+                    "blogs": len(self._owned_records(BLOG_TABLE, actor, "owner_signature")),
+                    "blog_posts": len(self._owned_records(BLOG_POST_TABLE, actor, "author_signature", "owner_signature")),
+                    "comments": len(self._owned_records(COMMENT_TABLE, actor, "author_signature")),
+                }
+                return {"key": capability, "label": "Eigene Inhalte", "value": value}
+            case "stats.own.media":
+                value = len(self._owned_records(MEDIA_TABLE, actor, "owner_signature", "author_signature"))
+                return {"key": capability, "label": "Eigene Medien", "value": value}
+            case "stats.own.e2ee_keys":
+                value = len(self._owned_records(E2EE_KEY_TABLE, actor, "owner_signature"))
+                return {"key": capability, "label": "Eigene E2EE-Keys", "value": value}
+            case "stats.public.reactions":
+                value = len([r for r in self._all_records(REACTION_TABLE) if not r.get("data", {}).get("deleted")])
+                return {"key": capability, "label": "Öffentliche Reaktionen", "value": value}
+            case "stats.public.blog.count":
+                value = len([r for r in self._all_records(BLOG_TABLE) if not r.get("data", {}).get("deleted")])
+                return {"key": capability, "label": "Öffentliche Blogs", "value": value}
+            case "digest.own.activity":
+                digest = self._plugin_mycelia_digest(actor)
+                return {"key": capability, "label": "Deine Aktivität", "value": digest.get("summary", {})}
+            case "digest.own.e2ee.count":
+                digest = self._plugin_mycelia_digest(actor)
+                return {"key": capability, "label": "E2EE-Zähler", "value": {"inbox": digest.get("unread_e2ee_count", 0), "outbox": digest.get("outbox_count", 0)}}
+            case "digest.public.recent":
+                digest = self._plugin_mycelia_digest(actor)
+                return {"key": capability, "label": "Neue öffentliche Inhalte", "value": digest.get("recent_public", [])}
+            case "privacy.own.inventory":
+                privacy = self._plugin_privacy_guardian(actor)
+                return {"key": capability, "label": "Eigene Dateninventur", "value": privacy.get("inventory", {})}
+            case "privacy.own.media":
+                privacy = self._plugin_privacy_guardian(actor)
+                return {"key": capability, "label": "Eigene Medien", "value": privacy.get("media_count", 0)}
+            case "privacy.own.e2ee_keys":
+                privacy = self._plugin_privacy_guardian(actor)
+                return {"key": capability, "label": "E2EE-Key-Status", "value": privacy.get("e2ee_keys", {})}
+            case "privacy.own.export_status":
+                privacy = self._plugin_privacy_guardian(actor)
+                return {"key": capability, "label": "DSGVO-Aktionen", "value": privacy.get("actions", {})}
+            case "trust.public.content":
+                trust = self._plugin_content_trust_lens(actor)
+                return {"key": capability, "label": "Trust Übersicht", "value": trust.get("summary", {})}
+            case "trust.public.reactions":
+                trust = self._plugin_content_trust_lens(actor)
+                return {"key": capability, "label": "Reaktionssignale", "value": trust.get("reaction_signals", {})}
+            case "trust.public.comments":
+                trust = self._plugin_content_trust_lens(actor)
+                return {"key": capability, "label": "Diskussionssignale", "value": trust.get("discussion_signals", {})}
+            case "trust.public.moderation":
+                trust = self._plugin_content_trust_lens(actor)
+                return {"key": capability, "label": "Moderationsstatus", "value": trust.get("moderation", {})}
             case _:
                 return {"key": capability, "label": capability, "value": None}
 
@@ -3401,7 +4314,7 @@ class MyceliaPlatform:
                 "tension": tension,
                 "unknown_capabilities": unknown_caps,
             }
-        metrics = [self._plugin_aggregate_value(cap) for cap in caps]
+        metrics = [self._plugin_aggregate_value(cap, payload) for cap in caps]
         safe_output = {
             "plugin_id": manifest.get("plugin_id"),
             "name": manifest.get("name"),
@@ -5826,6 +6739,20 @@ class MyceliaPlatform:
                 result = self.admin_update_user_rights(payload)
             case "plugin_catalog":
                 result = self.plugin_catalog(payload)
+            case "enterprise_plugin_dashboard":
+                result = self.enterprise_plugin_dashboard(payload)
+            case "fun_plugin_dashboard":
+                result = self.fun_plugin_dashboard(payload)
+            case "create_poll":
+                result = self.create_poll(payload)
+            case "list_polls":
+                result = self.list_polls(payload)
+            case "vote_poll":
+                result = self.vote_poll(payload)
+            case "create_time_capsule":
+                result = self.create_time_capsule(payload)
+            case "list_time_capsules":
+                result = self.list_time_capsules(payload)
             case "list_plugins":
                 result = self.list_plugins(payload)
             case "admin_install_plugin":
@@ -5852,6 +6779,24 @@ class MyceliaPlatform:
                 result = self.autosave_snapshot(str(payload.get("reason", "api")))
             case "residency_report":
                 result = self.residency_report(payload)
+            case "create_poll":
+                options = []
+                for idx in range(1, 7):
+                    val = str(data.get(f"option_{idx}", "")).strip()
+                    if val:
+                        options.append(val)
+                if not options:
+                    try:
+                        loaded = json.loads(str(data.get("options_json", "[]")))
+                        if isinstance(loaded, list):
+                            options = [str(v).strip() for v in loaded if str(v).strip()]
+                    except Exception:
+                        options = []
+                return {"question": data.get("question", ""), "options": options, "target_signature": data.get("target_signature", "")}
+            case "vote_poll":
+                return {"poll_signature": data.get("poll_signature", ""), "option_id": data.get("option_id", "")}
+            case "create_time_capsule":
+                return {"title": data.get("title", ""), "body": data.get("body", ""), "reveal_at": data.get("reveal_at", ""), "visibility": data.get("visibility", "private")}
             case "vram_residency_audit":
                 result = self.vram_residency_audit(payload)
             case "residency_audit_manifest":
